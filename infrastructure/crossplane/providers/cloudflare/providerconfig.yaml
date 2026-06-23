@@ -1,0 +1,28 @@
+# Default ProviderConfig for the wildbitca Cloudflare provider. Reads
+# a JSON-shaped credential blob from the Secret cloudflare-provider-creds,
+# rendered by ESO (see composites/home/externalsecrets.cue →
+# "cloudflare-provider-creds").
+#
+# Expected credentials value (JSON):
+#   {"api_token":"<scoped-token>"}
+#
+# The terraform-provider-cloudflare convention is `api_token` (not
+# `apiToken`). Stick to that — Upjet doesn't re-camel-case the field
+# names when extracting from credentials.
+#
+# CRD group: upjet-cloudflare.upbound.io (not cloudflare.upbound.io —
+# the upjet wildbitca packaging puts ProviderConfig under the
+# "upjet-cloudflare" group umbrella; resource CRDs sit under per-family
+# subgroups like `cloudflare.upjet-cloudflare.upbound.io` and
+# `zone.upjet-cloudflare.upbound.io`).
+apiVersion: upjet-cloudflare.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: cloudflare-provider-creds
+      namespace: crossplane-system
+      key: credentials

@@ -1,0 +1,8 @@
+# CloudNativePG Operator — Helm values
+# Chart: cnpg/cloudnative-pg 0.28.0
+
+crds:
+  create: true
+
+image:
+  repository: ghcr.io/cloudnative-pg/cloudnative-pg

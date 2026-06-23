@@ -1,0 +1,24 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: openbao-lan
+  namespace: openbao
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: openbao.preview.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: openbao-ui
+                port:
+                  number: 8200

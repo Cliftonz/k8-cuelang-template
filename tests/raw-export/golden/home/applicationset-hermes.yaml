@@ -1,0 +1,244 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: hermes
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  generators:
+    - list:
+        elements:
+          - {}
+  template:
+    metadata:
+      name: hermes
+      labels:
+        app.kubernetes.io/part-of: bb-platform
+        hermes.example.internal/profile: admin
+      finalizers:
+        - resources-finalizer.argoproj.io
+    spec:
+      project: bb-platform
+      source:
+        repoURL: https://github.com/example-org/k8-infra.git
+        targetRevision: main
+        path: infrastructure/hermes-agent/chart
+        helm:
+          valuesObject:
+            deploymentAnnotations:
+              reloader.stakater.com/auto: "true"
+            command:
+              - /opt/hermes/.venv/bin/hermes
+            image:
+              repository: nousresearch/hermes-agent
+              tag: v2026.5.29.2
+              pullPolicy: IfNotPresent
+            persistence:
+              enabled: true
+              size: 10Gi
+              storageClass: longhorn
+              mountPath: /opt/data
+            resources:
+              requests:
+                cpu: 250m
+                memory: 1Gi
+              limits:
+                cpu: "2"
+                memory: 4Gi
+            config:
+              values:
+                model:
+                  default: anthropic/claude-opus-4.6
+                  provider: auto
+                  base_url: https://ai-gateway.vercel.sh/v1
+                agent:
+                  max_turns: 90
+                  gateway_timeout: 1800
+                  restart_drain_timeout: 60
+                  tool_use_enforcement: auto
+                memory:
+                  memory_enabled: true
+                  provider: honcho
+                mcp_servers:
+                  vapi-mcp:
+                    url: https://mcp.vapi.ai/mcp
+                    headers:
+                      Authorization: Bearer ${VAPI_TOKEN}
+            extraEnv:
+              - name: PYTHONPATH
+                value: /honcho-pkg
+            extraVolumeMounts:
+              - name: honcho-pkg
+                mountPath: /honcho-pkg
+            extraInitContainers:
+              - name: install-honcho-plugin
+                image: python:3.13-slim
+                imagePullPolicy: IfNotPresent
+                command:
+                  - sh
+                  - -c
+                args:
+                  - |-
+                    set -e
+                    echo '> Installing honcho-ai into /honcho-pkg...'
+                    pip install --no-cache-dir --target /honcho-pkg honcho-ai 2>&1 | tail -3
+                    if [ ! -f /opt/data/honcho.json ]; then
+                      echo '> Seeding honcho.json (enabled=true, aiPeer=admin)...'
+                      cat > /opt/data/honcho.json <<JSON
+                    {"hosts":{"hermes":{"enabled":true,"workspace":"hermes","aiPeer":"admin","recallMode":"hybrid","writeFrequency":"async"}}}
+                    JSON
+                    else
+                      echo '> honcho.json already exists; leaving as-is.'
+                    fi
+                volumeMounts:
+                  - name: honcho-pkg
+                    mountPath: /honcho-pkg
+                  - name: data
+                    mountPath: /opt/data
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  runAsNonRoot: true
+                  runAsUser: 10000
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+            secrets:
+              existingSecret: hermes-secrets
+            apiServer:
+              enabled: true
+              host: 0.0.0.0
+              port: 8642
+              modelName: hermes-agent
+            service:
+              enabled: true
+              type: ClusterIP
+              ports:
+                - name: api-server
+                  port: 8642
+                  targetPort: 8642
+                  containerPort: 8642
+                  protocol: TCP
+                - name: dashboard
+                  port: 9119
+                  targetPort: 9119
+                  containerPort: 9119
+                  protocol: TCP
+            extraContainers:
+              - name: dashboard
+                image: nousresearch/hermes-agent:v2026.5.29.2
+                imagePullPolicy: IfNotPresent
+                workingDir: /opt/hermes
+                command:
+                  - /opt/hermes/.venv/bin/hermes
+                args:
+                  - dashboard
+                  - --host
+                  - 0.0.0.0
+                  - --port
+                  - "9119"
+                  - --insecure
+                  - --no-open
+                  - --skip-build
+                  - --tui
+                envFrom:
+                  - secretRef:
+                      name: hermes-secrets
+                env:
+                  - name: HERMES_HOME
+                    value: /opt/data
+                  - name: HOME
+                    value: /opt/data
+                  - name: HERMES_DASHBOARD_TUI
+                    value: "1"
+                  - name: PYTHONPATH
+                    value: /honcho-pkg
+                ports:
+                  - name: dashboard
+                    containerPort: 9119
+                    protocol: TCP
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 512Mi
+                  limits:
+                    cpu: "1"
+                    memory: 2Gi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                volumeMounts:
+                  - name: data
+                    mountPath: /opt/data
+                  - name: tmp
+                    mountPath: /tmp
+                  - name: tui-dist
+                    mountPath: /opt/hermes/ui-tui/dist
+                  - name: honcho-pkg
+                    mountPath: /honcho-pkg
+            ingress:
+              enabled: false
+            virtualService:
+              enabled: false
+            operator:
+              enabled: false
+            bootstrap:
+              enabled: true
+              overwrite: true
+            extraVolumes:
+              - name: tui-dist
+                emptyDir:
+                  sizeLimit: 64Mi
+              - name: honcho-pkg
+                emptyDir:
+                  sizeLimit: 200Mi
+            extraObjects:
+              - apiVersion: traefik.io/v1alpha1
+                kind: Middleware
+                metadata:
+                  name: redirect-root-to-health-admin
+                  namespace: hermes
+                spec:
+                  redirectRegex:
+                    permanent: false
+                    regex: ^(https?://[^/]+)/?$
+                    replacement: ${1}/health
+      destination:
+        name: in-cluster
+        namespace: hermes
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            app.kubernetes.io/part-of: bb-platform
+            infra.k8/tier: production
+            infra.k8/cluster: home
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: MeTube
+    gethomepage.dev/group: Tools
+    gethomepage.dev/icon: metube.png
+    gethomepage.dev/description: yt-dlp web UI
+    gethomepage.dev/href: http://metube.example.internal
+    gethomepage.dev/namespace: traefik
+    gethomepage.dev/pod-selector: app.kubernetes.io/name=traefik
+    gethomepage.dev/siteMonitor: http://metube.example.internal
+  name: metube
+  namespace: metube
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: metube.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: metube-backend
+                port:
+                  number: 80
+  tls:
+    - secretName: metube-tls
+      hosts:
+        - metube.example.internal

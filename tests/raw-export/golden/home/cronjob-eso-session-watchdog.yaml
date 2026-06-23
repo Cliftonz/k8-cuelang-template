@@ -1,0 +1,269 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: eso-session-watchdog
+  namespace: external-secrets
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: '*/5 * * * *'
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 120
+  successfulJobsHistoryLimit: 5
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 180
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: eso-session-watchdog
+          restartPolicy: Never
+          automountServiceAccountToken: false
+          containers:
+            - name: watchdog
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+
+                  # ── Tunables (kept together so a future bump touches one place).
+                  # Schedule (*/5) ↔ STALENESS_THRESHOLD ↔ COOLDOWN_SEC must
+                  # stay in sync; the block comment above documents the contract.
+                  STALENESS_THRESHOLD=300
+                  COOLDOWN_SEC=1800
+                  ESCALATION_AGE=1800
+                  RUNBOOK="docs/troubleshooting-2026-05-15-post-recovery-hardening.md"
+                  PUSHGW="http://opencost-prometheus-prometheus-pushgateway.opencost.svc:9091"
+                  KUBECTL="kubectl --request-timeout=20s"
+
+                  # OpenBao-seeded secrets often carry a trailing \n that
+                  # leaks into curl's URL on some clients. Strip it.
+                  WEBHOOK="$(tr -d '\r\n' </run/discord/url 2>/dev/null || true)"
+
+                  notify_discord() {
+                  	body="$1"
+                  	if [ -z "$WEBHOOK" ]; then
+                  		# Webhook not synced yet (ESO itself may be the
+                  		# broken thing). Log to stderr; bumped history
+                  		# limit means `kubectl logs job/...` finds it.
+                  		echo "WOULD ALERT (no webhook): $body" >&2
+                  		return 0
+                  	fi
+                  	# Build JSON via jq — no shell-interpolation injection
+                  	# into the body, no Discord-markdown impersonation
+                  	# from attacker-controlled CSS status messages.
+                  	jq -nc --arg c "$body" '{content: $c}' \
+                  		| curl -sS -m 10 -X POST -H 'Content-Type: application/json' \
+                  			--data-binary @- "$WEBHOOK" >/dev/null 2>&1 \
+                  		|| echo "discord post failed (continuing)" >&2
+                  }
+
+                  push_metric() {
+                  	# Pushgateway is best-effort — never fail the
+                  	# watchdog if metrics push is unreachable.
+                  	payload="$1"
+                  	printf '%s\n' "$payload" \
+                  		| curl -sS -m 5 --data-binary @- \
+                  			"$PUSHGW/metrics/job/eso_session_watchdog" \
+                  			>/dev/null 2>&1 \
+                  		|| echo "pushgateway push failed (continuing)" >&2
+                  }
+
+                  NOW=$(date +%s)
+
+                  # Heartbeat every tick. Operator alert:
+                  #   time() - k8_infra_eso_session_watchdog_last_tick_seconds > 900
+                  # detects a suspended or unschedulable watchdog.
+                  push_metric "$(printf '# TYPE k8_infra_eso_session_watchdog_last_tick_seconds gauge\nk8_infra_eso_session_watchdog_last_tick_seconds %s\n' "$NOW")"
+
+                  # ── 1. List CSS state in ONE apiserver round-trip.
+                  # Use jq's fromdateiso8601 — busybox `date -d` cannot
+                  # parse RFC3339 in alpine/k8s, and silent parse failure
+                  # was the original bug (threshold collapsed to 0).
+                  if ! CSS_JSON=$($KUBECTL get clustersecretstore -o json 2>&1); then
+                  	err=$(printf '%s' "$CSS_JSON" | tr -d '\n' | cut -c1-400)
+                  	notify_discord ":fire: **ESO watchdog** could NOT list ClusterSecretStores (self-failure). apiserver / RBAC / NP issue. Output: \`$err\`"
+                  	exit 1
+                  fi
+
+                  # Emit TSV: <name>\t<reason>\t<message_clean>\t<age_seconds>
+                  # Only stale-enough CSSes survive the filter:
+                  #   - Ready condition exists and is False
+                  #   - lastTransitionTime parses (silently skip if not)
+                  #   - age ≥ STALENESS_THRESHOLD
+                  # The gsub() strips Discord-markdown chars from message
+                  # so a hostile CSS status message cannot impersonate
+                  # operator instructions in the trusted watchdog channel.
+                  STALE=$(printf '%s' "$CSS_JSON" | jq -r \
+                  	--argjson now "$NOW" \
+                  	--argjson thr "$STALENESS_THRESHOLD" '
+                  	.items[]
+                  	| . as $css
+                  	| ($css.status.conditions[]? | select(.type=="Ready")) as $r
+                  	| select($r.status == "False")
+                  	| ($r.lastTransitionTime | fromdateiso8601? // empty) as $ltt
+                  	| select($ltt != null)
+                  	| select(($now - $ltt) >= $thr)
+                  	| [$css.metadata.name,
+                  	   ($r.reason // "?"),
+                  	   (($r.message // "")
+                  	     | gsub("[`@<>*_~|]"; " ")
+                  	     | .[0:200]),
+                  	   ($now - $ltt)]
+                  	| @tsv
+                  	')
+
+                  if [ -z "$STALE" ]; then
+                  	echo "result=ok stale_count=0 ts=$NOW"
+                  	exit 0
+                  fi
+
+                  STALE_COUNT=$(printf '%s\n' "$STALE" | wc -l | tr -d ' ')
+                  STALE_NAMES=$(printf '%s\n' "$STALE" | cut -f1 | paste -sd, -)
+                  MAX_AGE=$(printf '%s\n' "$STALE" | awk -F'\t' '{if($4>m)m=$4} END{print m+0}')
+                  REP_REASON=$(printf '%s' "$STALE" | head -1 | cut -f2)
+                  REP_MSG=$(printf '%s' "$STALE" | head -1 | cut -f3)
+
+                  # Bounded label cardinality: {network, auth, other}.
+                  REASON_BLOB=$(printf '%s %s' "$REP_REASON" "$REP_MSG" | tr '[:upper:]' '[:lower:]')
+                  case "$REASON_BLOB" in
+                  	*connection*refused*|*"i/o timeout"*|*"no such host"*|*"network is unreachable"*) REASON_CLASS=network ;;
+                  	*401*|*403*|*unauthorized*|*forbidden*|*token*|*permission*|*denied*)               REASON_CLASS=auth ;;
+                  	*)                                                                                  REASON_CLASS=other ;;
+                  esac
+
+                  echo "result=stale stale_count=$STALE_COUNT max_age=$MAX_AGE class=$REASON_CLASS names=$STALE_NAMES"
+
+                  # ── 2. Locate the ESO Deployment by chart label, not
+                  # hardcoded name. A Helm release rename then surfaces
+                  # loudly (Discord alert) instead of silently no-op'ing.
+                  DEPLOY=$($KUBECTL -n external-secrets get deploy \
+                  	-l app.kubernetes.io/name=external-secrets,app.kubernetes.io/instance=external-secrets \
+                  	-o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+                  DEPLOY_COUNT=$(echo "$DEPLOY" | wc -w | tr -d ' ')
+                  if [ "$DEPLOY_COUNT" != "1" ]; then
+                  	notify_discord ":fire: **ESO watchdog** expected exactly one ESO Deployment matching \`app.kubernetes.io/name=external-secrets\`, found $DEPLOY_COUNT: \`$DEPLOY\`. Chart may have been renamed; update watchdog selector."
+                  	exit 1
+                  fi
+
+                  # ── 3. Cooldown — skip restart if we restarted recently.
+                  LAST_RESTART=$($KUBECTL -n external-secrets get deploy "$DEPLOY" \
+                  	-o 'jsonpath={.spec.template.metadata.annotations.k8-infra\.io/eso-session-watchdog-restart-epoch}' \
+                  	2>/dev/null || true)
+                  LAST_RESTART="${LAST_RESTART:-0}"
+                  SINCE_LAST=$((NOW - LAST_RESTART))
+
+                  if [ "$LAST_RESTART" -gt 0 ] && [ "$SINCE_LAST" -lt "$COOLDOWN_SEC" ]; then
+                  	AGO_MIN=$((SINCE_LAST / 60))
+                  	if [ "$MAX_AGE" -ge "$ESCALATION_AGE" ]; then
+                  		# Restart fired ${AGO_MIN}m ago and CSS is STILL stale.
+                  		# Escalate with rotating-light so the operator notices
+                  		# this is not transient.
+                  		notify_discord ":rotating_light: **ESO watchdog** — restart $AGO_MIN min ago did NOT recover CSS [$STALE_NAMES] (still Ready=False for $((MAX_AGE/60)) min, class=$REASON_CLASS). Root cause is not transient — manual investigation needed.
+                  Runbook: $RUNBOOK
+                  Verify: kubectl -n external-secrets describe clustersecretstore $(printf '%s' "$STALE_NAMES" | cut -d, -f1)
+                  Reason: $REP_REASON"
+                  		push_metric "$(printf '# TYPE k8_infra_eso_session_watchdog_escalation_total counter\nk8_infra_eso_session_watchdog_escalation_total{class=\"%s\"} 1\n' "$REASON_CLASS")"
+                  	else
+                  		echo "result=cooldown since_last=${SINCE_LAST}s threshold=${COOLDOWN_SEC}s class=$REASON_CLASS"
+                  	fi
+                  	exit 0
+                  fi
+
+                  # ── 4. Patch the Deployment.
+                  # Annotations:
+                  #   restart-epoch       — unix time, drives cooldown above
+                  #   restart-fingerprint — sha256 of (names+reason); identical
+                  #                         payload renders identically across
+                  #                         ticks → strategic-merge no-op. The
+                  #                         audit log gets one entry per unique
+                  #                         incident, not one per tick.
+                  #   restart-source      — self-documenting; an operator
+                  #                         inspecting the Deployment a week
+                  #                         later can find this watchdog from
+                  #                         the annotation alone.
+                  FINGERPRINT=$(printf '%s|%s' "$STALE_NAMES" "$REP_REASON" | sha256sum | cut -c1-12)
+                  PATCH=$(jq -nc \
+                  	--arg epoch "$NOW" \
+                  	--arg fp "$FINGERPRINT" \
+                  	'{spec:{template:{metadata:{annotations:{
+                  		"k8-infra.io/eso-session-watchdog-restart-epoch": $epoch,
+                  		"k8-infra.io/eso-session-watchdog-restart-fingerprint": $fp,
+                  		"k8-infra.io/eso-session-watchdog-restart-source": "eso-session-watchdog"
+                  	}}}}}')
+
+                  if ! PATCH_OUT=$($KUBECTL -n external-secrets patch deploy "$DEPLOY" \
+                  		--type=strategic --patch "$PATCH" 2>&1); then
+                  	err=$(printf '%s' "$PATCH_OUT" | tr -d '\n' | cut -c1-400)
+                  	notify_discord ":fire: **ESO watchdog** detected stale CSS [$STALE_NAMES] but FAILED to patch \`$DEPLOY\`: \`$err\`. Manual intervention needed.
+                  Runbook: $RUNBOOK"
+                  	push_metric "$(printf '# TYPE k8_infra_eso_session_watchdog_patch_failed_total counter\nk8_infra_eso_session_watchdog_patch_failed_total{class=\"%s\"} 1\n' "$REASON_CLASS")"
+                  	exit 1
+                  fi
+
+                  # Single Discord alert regardless of how many CSSes flipped.
+                  # Includes runbook + correlation handles (Job name, verify
+                  # command, fingerprint) so the 3-AM operator has everything
+                  # in one message.
+                  notify_discord ":arrows_counterclockwise: **ESO session watchdog** — CSS [$STALE_NAMES] Ready=False for $((MAX_AGE/60)) min (class=$REASON_CLASS). Patched Deployment \`$DEPLOY\` (fingerprint $FINGERPRINT); CSS should recover within ~30s.
+                  Reason: $REP_REASON
+                  Job: $(hostname)
+                  Runbook: $RUNBOOK
+                  Verify: kubectl -n external-secrets rollout status deploy/$DEPLOY --timeout=90s"
+
+                  push_metric "$(printf '# TYPE k8_infra_eso_session_watchdog_restart_total counter\nk8_infra_eso_session_watchdog_restart_total{class=\"%s\"} 1\n' "$REASON_CLASS")"
+
+                  echo "result=restarted deploy=$DEPLOY fingerprint=$FINGERPRINT count=$STALE_COUNT class=$REASON_CLASS"
+              volumeMounts:
+                - name: discord
+                  mountPath: /run/discord
+                  readOnly: true
+                - name: sa-token
+                  mountPath: /var/run/secrets/kubernetes.io/serviceaccount
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+          volumes:
+            - name: discord
+              secret:
+                secretName: discord-webhook-eso
+            - name: sa-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: token
+                      audience: https://kubernetes.default.svc
+                      expirationSeconds: 600
+                  - configMap:
+                      name: kube-root-ca.crt
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+                  - downwardAPI:
+                      items:
+                        - path: namespace
+                          fieldRef:
+                            fieldPath: metadata.namespace

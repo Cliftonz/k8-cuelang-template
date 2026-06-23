@@ -1,0 +1,103 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: preview-envs
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  goTemplate: true
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - slug: salessage
+                  owner: example-org
+                  name: SalesSage
+                  dependsOnAI: "false"
+          - pullRequest:
+              github:
+                owner: '{{.owner}}'
+                repo: '{{.name}}'
+                appSecretName: github-app-creds-argocd
+                labels:
+                  - preview
+              requeueAfterSeconds: 30
+  template:
+    metadata:
+      name: '{{.slug}}-{{.number}}'
+      labels:
+        preview: "true"
+        pr-number: '{{.number}}'
+        appslug: '{{.slug}}'
+      annotations:
+        notifications.argoproj.io/subscribe.on-deployed.github: ""
+        notifications.argoproj.io/subscribe.on-health-degraded.github: ""
+        notifications.argoproj.io/subscribe.on-ai-outage.discord: ""
+        preview.example.com/depends-on-ai: '{{.dependsOnAI}}'
+      finalizers:
+        - resources-finalizer.argoproj.io
+    spec:
+      project: previews
+      info:
+        - name: PR URL
+          value: https://github.com/{{.owner}}/{{.name}}/pull/{{.number}}
+        - name: Preview index (LAN)
+          value: https://{{.slug}}-pr-{{.number}}.example.internal
+        - name: App (LAN)
+          value: https://app.{{.slug}}-pr-{{.number}}.example.internal
+        - name: Mailpit (LAN)
+          value: https://mailpit.{{.slug}}-pr-{{.number}}.example.internal
+        - name: Supabase (LAN)
+          value: https://supabase.{{.slug}}-pr-{{.number}}.example.internal
+      source:
+        repoURL: https://github.com/{{.owner}}/{{.name}}.git
+        targetRevision: '{{.head_sha}}'
+        path: chart
+        helm:
+          valuesObject:
+            image:
+              repository: ghcr.io/{{.owner}}/{{.slug}}
+              commitSha: '{{.head_sha}}'
+            prNumber: '{{.number}}'
+            hostBase: '{{.slug}}-pr-{{.number}}.example.internal'
+            ingress:
+              enabled: true
+              className: traefik
+            fullnameOverride: '{{.slug}}-{{.number}}'
+            supabase:
+              environment:
+                auth:
+                  SITE_URL: https://app.{{.slug}}-pr-{{.number}}.example.internal
+                  GOTRUE_SITE_URL: https://app.{{.slug}}-pr-{{.number}}.example.internal
+                  API_EXTERNAL_URL: https://app.{{.slug}}-pr-{{.number}}.example.internal
+                  GOTRUE_API_EXTERNAL_URL: https://app.{{.slug}}-pr-{{.number}}.example.internal
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: preview-{{.slug}}-{{.number}}
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            preview: "true"
+            pr-number: '{{.number}}'
+            appslug: '{{.slug}}'
+            infra.k8/tier: dev
+            infra.k8/cluster: preview
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

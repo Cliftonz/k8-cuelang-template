@@ -1,0 +1,44 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: infra-deps-weekly
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 1
+  when:
+    cron:
+      schedule: 0 7 * * 1
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: k8-infra
+    agentConfigRef:
+      name: infra-deps-weekly
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    promptTemplate: |-
+      Weekly infra-dependency drift check for example-org/k8-infra.
+
+      Cron tick at {{.Time}} (schedule: {{.Schedule}}).
+
+      Follow your AgentConfig instructions exactly:
+        1. Dedup against any open `<!-- infra-deps-weekly -->`
+           issue — if one exists, comment on it and stop.
+        2. Detect drift per Step 2 of your AgentConfig
+           (run the script if helm/jq/cue are present, else
+           the inventory path: read pins + compare upstream).
+        3. Open ONE tracking issue with the drift table, or
+           comment on the existing one. No PRs, no version
+           bumps, no `ai-feature` label.
+
+      If there is no actionable drift and nothing errored,
+      stop without opening an issue.
+    ttlSecondsAfterFinished: 86400

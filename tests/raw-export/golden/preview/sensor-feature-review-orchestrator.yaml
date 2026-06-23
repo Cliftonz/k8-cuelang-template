@@ -1,0 +1,104 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-review-orchestrator
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  dependencies:
+    - name: review-or-push
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - submitted
+              - synchronize
+          - path: body.pull_request.number
+            type: number
+            comparator: '>'
+            value:
+              - "0"
+          - path: body.repository.full_name
+            type: string
+            comparator: =~
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: run-orchestrator
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: feature-orchestrator-
+                namespace: kelos-system
+              spec:
+                template:
+                  spec:
+                    restartPolicy: Never
+                    serviceAccountName: feature-orchestrator
+                    containers:
+                      - name: orchestrator
+                        image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: REPO
+                            value: PLACEHOLDER_REPO
+                          - name: PR_NUMBER
+                            value: PLACEHOLDER_PR
+                          - name: READY_TO_MERGE_LABEL
+                            value: ready-to-merge
+                          - name: REVIEW_FAILED_LABEL
+                            value: review-failed
+                          - name: AWAITING_HUMAN_LABEL
+                            value: awaiting-human
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-pat
+                                key: GITHUB_TOKEN
+                        resources:
+                          requests:
+                            cpu: 50m
+                            memory: 128Mi
+                          limits:
+                            cpu: 500m
+                            memory: 512Mi
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 600
+          parameters:
+            - src:
+                dependencyName: review-or-push
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.0.value
+            - src:
+                dependencyName: review-or-push
+                dataTemplate: '{{ if .Input.body.pull_request }}{{ .Input.body.pull_request.number }}{{ else }}0{{ end }}'
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: review-or-push
+                dataTemplate: |-
+                  set -eu
+                  apk add --no-cache git bash jq >/dev/null 2>&1 || true
+                  # gh CLI install (alpine doesn't have it by default)
+                  if ! command -v gh >/dev/null 2>&1; then
+                    wget -qO- https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                    mv /tmp/gh_2.62.0_linux_amd64/bin/gh /usr/local/bin/gh
+                  fi
+                  git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/example-org/k8-infra.git" /tmp/infra
+                  exec bash /tmp/infra/ci/scripts/feature-orchestrator.sh
+              dest: spec.template.spec.containers.0.command.2

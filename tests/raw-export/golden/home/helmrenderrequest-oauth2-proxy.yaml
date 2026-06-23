@@ -1,0 +1,364 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: oauth2-proxy
+  namespace: oauth-proxy
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: oauth2-proxy
+    repository: https://oauth2-proxy.github.io/manifests
+    version: 7.7.30
+  values:
+    replicaCount: 1
+    image:
+      tag: v7.7.1
+    config:
+      configFile: |-
+        provider = "oidc"
+        oidc_issuer_url = "https://dex.example.com"
+        provider_display_name = "Example Org"
+        email_domains = ["example.com"]
+        redirect_url = "https://oauth.example.internal/oauth2/callback"
+        cookie_domains = [".example.internal"]
+        whitelist_domains = [".example.internal"]
+        skip_provider_button = true
+        reverse_proxy = true
+        pass_access_token = true
+        pass_authorization_header = true
+        set_authorization_header = true
+        set_xauthrequest = true
+        # upstream is the Traefik ForwardAuth caller; oauth2-proxy
+        # just answers /oauth2/auth and /oauth2/callback.
+        upstreams = ["static://200"]
+        # Force HTTPS cookies (browser sees HTTPS via Traefik).
+        cookie_secure = true
+        http_address = "0.0.0.0:4180"
+      existingSecret: oauth2-proxy-dex-client
+    extraArgs:
+      oidc-issuer-url: https://dex.example.com
+      redirect-url: https://oauth.example.internal/oauth2/callback
+      email-domain: example.com
+      cookie-domain: .example.internal
+      whitelist-domain: .example.internal
+      reverse-proxy: "true"
+      set-xauthrequest: "true"
+      skip-provider-button: "true"
+    service:
+      type: ClusterIP
+      portNumber: 80
+    resources:
+      requests:
+        cpu: 20m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+    extraObjects:
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: forward-auth-dex
+          namespace: oauth-proxy
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          forwardAuth:
+            address: http://oauth2-proxy.oauth-proxy.svc.cluster.local/oauth2/auth
+            authResponseHeaders:
+              - X-Auth-Request-Access-Token
+              - X-Auth-Request-User
+              - X-Auth-Request-Email
+              - X-Auth-Request-Groups
+              - Authorization
+            trustForwardHeader: true
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: signin-redirect
+          namespace: oauth-proxy
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          errors:
+            status:
+              - "401"
+            service:
+              name: oauth-redirect-page
+              port: 80
+            query: /
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: auth-with-redirect
+          namespace: oauth-proxy
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          chain:
+            middlewares:
+              - name: signin-redirect
+                namespace: oauth-proxy
+              - name: forward-auth-dex
+                namespace: oauth-proxy
+      - apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: oauth-redirect-page
+          namespace: oauth-proxy
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        data:
+          index.html: |-
+            <!DOCTYPE html>
+            <html><head>
+            <meta charset="utf-8">
+            <title>Sign in</title>
+            <script>
+            (function(){window.location.replace('/oauth2/start?rd='+encodeURIComponent(window.location.href));})();
+            </script>
+            <meta http-equiv="refresh" content="0;url=/oauth2/start">
+            </head><body>
+            <p>Redirecting to sign-in… If you are not redirected automatically,
+            <a href="/oauth2/start">click here</a>.</p>
+            </body></html>
+      - apiVersion: apps/v1
+        kind: Deployment
+        metadata:
+          name: oauth-redirect-page
+          namespace: oauth-proxy
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          replicas: 1
+          selector:
+            matchLabels:
+              app: oauth-redirect-page
+          template:
+            metadata:
+              labels:
+                app: oauth-redirect-page
+            spec:
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65534
+                runAsGroup: 65534
+                fsGroup: 65534
+                seccompProfile:
+                  type: RuntimeDefault
+              containers:
+                - name: httpd
+                  image: busybox:1.36
+                  command:
+                    - /bin/sh
+                    - -c
+                  args:
+                    - |
+                      cd /www
+                      exec httpd -f -v -p 8080 -h /www
+                  ports:
+                    - name: http
+                      containerPort: 8080
+                  securityContext:
+                    allowPrivilegeEscalation: false
+                    readOnlyRootFilesystem: true
+                    capabilities:
+                      drop:
+                        - ALL
+                  resources:
+                    requests:
+                      cpu: 5m
+                      memory: 8Mi
+                    limits:
+                      cpu: 50m
+                      memory: 32Mi
+                  volumeMounts:
+                    - name: www
+                      mountPath: /www
+                      readOnly: true
+              volumes:
+                - name: www
+                  configMap:
+                    name: oauth-redirect-page
+                    items:
+                      - key: index.html
+                        path: index.html
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: oauth-redirect-page
+          namespace: oauth-proxy
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          type: ClusterIP
+          selector:
+            app: oauth-redirect-page
+          ports:
+            - name: http
+              port: 80
+              targetPort: http
+              protocol: TCP
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: oauth2-proxy-bridge
+          namespace: goldilocks
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          type: ExternalName
+          externalName: oauth2-proxy.oauth-proxy.svc.cluster.local
+          ports:
+            - name: http
+              port: 80
+              protocol: TCP
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: oauth2-proxy-bridge
+          namespace: traefik
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          type: ExternalName
+          externalName: oauth2-proxy.oauth-proxy.svc.cluster.local
+          ports:
+            - name: http
+              port: 80
+              protocol: TCP
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: oauth2-proxy-bridge
+          namespace: hermes
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          type: ExternalName
+          externalName: oauth2-proxy.oauth-proxy.svc.cluster.local
+          ports:
+            - name: http
+              port: 80
+              protocol: TCP
+      - apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: goldilocks-oauth2
+          namespace: goldilocks
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+          annotations:
+            external-dns.alpha.kubernetes.io/target: 192.168.1.235
+        spec:
+          ingressClassName: traefik
+          rules:
+            - host: goldilocks.example.internal
+              http:
+                paths:
+                  - path: /oauth2
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: oauth2-proxy-bridge
+                        port:
+                          number: 80
+          tls:
+            - hosts:
+                - goldilocks.example.internal
+              secretName: goldilocks-tls
+      - apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: traefik-dashboard-oauth2
+          namespace: traefik
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+          annotations:
+            external-dns.alpha.kubernetes.io/target: 192.168.1.235
+        spec:
+          ingressClassName: traefik
+          rules:
+            - host: traefik.example.internal
+              http:
+                paths:
+                  - path: /oauth2
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: oauth2-proxy-bridge
+                        port:
+                          number: 80
+          tls:
+            - hosts:
+                - traefik.example.internal
+              secretName: traefik-dashboard-tls
+      - apiVersion: networking.k8s.io/v1
+        kind: Ingress
+        metadata:
+          name: hermes-dashboard-oauth2
+          namespace: hermes
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+          annotations:
+            external-dns.alpha.kubernetes.io/target: 192.168.1.235
+        spec:
+          ingressClassName: traefik
+          rules:
+            - host: hermes-admin-dashboard.example.internal
+              http:
+                paths:
+                  - path: /oauth2
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: oauth2-proxy-bridge
+                        port:
+                          number: 80
+            - host: hermes-dev2-dashboard.example.internal
+              http:
+                paths:
+                  - path: /oauth2
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: oauth2-proxy-bridge
+                        port:
+                          number: 80
+            - host: hermes-redteam-dashboard.example.internal
+              http:
+                paths:
+                  - path: /oauth2
+                    pathType: Prefix
+                    backend:
+                      service:
+                        name: oauth2-proxy-bridge
+                        port:
+                          number: 80
+          tls:
+            - hosts:
+                - hermes-admin-dashboard.example.internal
+              secretName: hermes-admin-dashboard-tls
+            - hosts:
+                - hermes-dev2-dashboard.example.internal
+              secretName: hermes-dev2-dashboard-tls
+            - hosts:
+                - hermes-redteam-dashboard.example.internal
+              secretName: hermes-redteam-dashboard-tls

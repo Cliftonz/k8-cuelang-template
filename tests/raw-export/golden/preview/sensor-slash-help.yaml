@@ -1,0 +1,100 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: slash-help
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  dependencies:
+    - name: help-comment
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - created
+          - path: body.comment.body
+            type: string
+            comparator: =~
+            value:
+              - ^/help(\s|$)
+          - path: body.repository.full_name
+            type: string
+            comparator: =~
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: post-help
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: slash-help-
+                namespace: argo-events
+              spec:
+                template:
+                  spec:
+                    restartPolicy: Never
+                    containers:
+                      - name: reply
+                        image: ghcr.io/cli/cli:2.62.0
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-pat-events
+                                key: GITHUB_TOKEN
+                        resources:
+                          requests:
+                            cpu: 10m
+                            memory: 32Mi
+                          limits:
+                            cpu: 100m
+                            memory: 64Mi
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 300
+          parameters:
+            - src:
+                dependencyName: help-comment
+                dataTemplate: |-
+                  set -eu
+                  REPO='{{ .Input.body.repository.full_name }}'
+                  COMMENT_PATH='{{ .Input.body.comment.path }}'
+                  COMMENT_ID='{{ .Input.body.comment.id }}'
+
+                  HELP_BODY='## Available slash commands
+
+                  | Command | Where | What it does |
+                  |---|---|---|
+                  | `/review` | PR comment | Full AI review of the PR diff. Posts a summary. |
+                  | `/fix-ci` | PR comment _(auto-posted by CI on failure)_ | Reproduces failures, fixes code, pushes to PR branch. Max 3 attempts. |
+                  | `/explain <question>` | PR line comment | Explains the code at the commented line. Threaded reply. |
+                  | `/help` | Any comment | Shows this help message. |
+
+                  Commands work on any `example-org/*` repository.'
+
+                  if [ -n "$COMMENT_PATH" ] && [ "$COMMENT_PATH" != "null" ]; then
+                    PR_NUM='{{ .Input.body.pull_request.number }}'
+                    gh api -X POST "repos/${REPO}/pulls/${PR_NUM}/comments/${COMMENT_ID}/replies" \
+                      -f body="$HELP_BODY"
+                  else
+                    ISSUE_NUM='{{ .Input.body.issue.number }}'
+                    gh api -X POST "repos/${REPO}/issues/${ISSUE_NUM}/comments" \
+                      -f body="$HELP_BODY"
+                  fi
+              dest: spec.template.spec.containers.0.command.2

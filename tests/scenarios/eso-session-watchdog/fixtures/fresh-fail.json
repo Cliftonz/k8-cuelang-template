@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "metadata": {"name": "openbao-backend"},
+      "status": {
+        "conditions": [
+          {"type": "Ready", "status": "False", "reason": "ProviderError",
+           "message": "connection refused",
+           "lastTransitionTime": "__NOW_MINUS_2M__"}
+        ]
+      }
+    }
+  ]
+}

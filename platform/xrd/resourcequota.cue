@@ -1,0 +1,89 @@
+package xrd
+
+// XResourceQuota defines the CompositeResourceDefinition for ResourceQuota provisioning.
+#XResourceQuota: {
+	apiVersion: "apiextensions.crossplane.io/v2"
+	kind:       "CompositeResourceDefinition"
+	metadata: name: "xresourcequotas.\(#ApiGroup)"
+	spec: {
+		group: #ApiGroup
+		scope: "Cluster"
+		names: {
+			kind:   "XResourceQuota"
+			plural: "xresourcequotas"
+		}
+		versions: [{
+			name:          "v1alpha1"
+			served:        true
+			referenceable: true
+			schema: openAPIV3Schema: {
+				type:        "object"
+				description: "Request a Kubernetes ResourceQuota with tier-based defaults and ownership metadata."
+				properties: spec: {
+					type:        "object"
+					description: "Desired ResourceQuota limits and placement metadata."
+					example: {
+						name:      "platform-default"
+						namespace: "platform-system"
+						tier:      "dev"
+						cluster:   "new-dev"
+						owner:     "platform-team"
+						hard: {
+							"requests.cpu":    "1"
+							"requests.memory": "1Gi"
+							"limits.cpu":      "2"
+							"limits.memory":   "2Gi"
+						}
+					}
+					"x-docs": {
+						provider: "provider-kubernetes"
+						policyRefs: [
+							"platform/policy/resourcequota.cue",
+						]
+						behavior: [
+							"Creates or updates a ResourceQuota in the target namespace.",
+						]
+						gotchas: [
+							"All hard values are strings (e.g., 1Gi, 500m).",
+						]
+					}
+					properties: {
+						name: {
+							type:        "string"
+							description: "ResourceQuota resource name to create."
+							pattern:     "^[a-z][a-z0-9-]*$"
+						}
+						namespace: {
+							type:        "string"
+							description: "Namespace where the ResourceQuota will be created."
+							pattern:     "^[a-z][a-z0-9-]*$"
+						}
+						tier: {
+							type:        "string"
+							description: "Tier used for labeling and quota defaults."
+							enum: ["dev", "staging", "production"]
+						}
+						cluster: {
+							type:        "string"
+							description: "Logical cluster identifier used for labeling and placement."
+						}
+						owner: {
+							type:        "string"
+							description: "Owning team or service for accountability and routing."
+						}
+						hard: {
+							type:        "object"
+							description: "Resource quota hard limits map (e.g., requests.cpu, limits.memory)."
+							additionalProperties: {
+								type: "string"
+							}
+						}
+					}
+					required: ["name", "namespace", "tier", "cluster", "owner", "hard"]
+				}
+			}
+		}]
+	}
+}
+
+xResourceQuota: #XResourceQuota

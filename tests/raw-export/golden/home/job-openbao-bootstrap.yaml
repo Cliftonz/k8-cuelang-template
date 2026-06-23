@@ -1,0 +1,149 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: openbao-bootstrap
+  namespace: openbao
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  backoffLimit: 6
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: openbao-bootstrap
+    spec:
+      serviceAccountName: openbao-bootstrap
+      restartPolicy: OnFailure
+      containers:
+        - name: bootstrap
+          image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            runAsGroup: 65532
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          env:
+            - name: BAO_ADDR
+              value: http://openbao.openbao.svc.cluster.local:8200
+            - name: BAO_FORMAT
+              value: json
+            - name: HOME
+              value: /tmp
+          command:
+            - /bin/sh
+            - -c
+            - |-
+              set -eu
+
+              echo "Waiting for OpenBao to be reachable..."
+              for i in $(seq 1 60); do
+                if curl -sf "${BAO_ADDR}/v1/sys/health?uninitcode=200&sealedcode=200" >/dev/null; then
+                  break
+                fi
+                sleep 5
+              done
+
+              STATUS=$(curl -s "${BAO_ADDR}/v1/sys/health?uninitcode=200&sealedcode=200")
+              INITIALIZED=$(echo "$STATUS" | jq -r '.initialized')
+              SEALED=$(echo "$STATUS" | jq -r '.sealed')
+              echo "initialized=${INITIALIZED} sealed=${SEALED}"
+
+              if [ "$INITIALIZED" = "false" ]; then
+                echo "Initializing OpenBao..."
+                INIT=$(curl -sf -X POST "${BAO_ADDR}/v1/sys/init" \
+                  -d '{"secret_shares":1,"secret_threshold":1}')
+                ROOT_TOKEN=$(echo "$INIT" | jq -r '.root_token')
+                UNSEAL_KEY=$(echo "$INIT" | jq -r '.keys[0]')
+
+                kubectl create secret generic openbao-keys \
+                  -n openbao \
+                  --from-literal=root-token="$ROOT_TOKEN" \
+                  --from-literal=unseal-key="$UNSEAL_KEY" \
+                  --dry-run=client -o yaml | kubectl apply -f -
+              else
+                echo "Already initialized, loading keys from Secret..."
+                ROOT_TOKEN=$(kubectl get secret openbao-keys -n openbao \
+                  -o jsonpath='{.data.root-token}' | base64 -d)
+                UNSEAL_KEY=$(kubectl get secret openbao-keys -n openbao \
+                  -o jsonpath='{.data.unseal-key}' | base64 -d)
+              fi
+
+              if [ "$SEALED" = "true" ]; then
+                echo "Unsealing OpenBao..."
+                curl -sf -X POST "${BAO_ADDR}/v1/sys/unseal" \
+                  -d "{\"key\":\"$UNSEAL_KEY\"}" >/dev/null
+              fi
+
+              AUTH="X-Vault-Token: $ROOT_TOKEN"
+
+              echo "Enabling KV v2 secrets engine at secret/..."
+              curl -s -X POST -H "$AUTH" \
+                "${BAO_ADDR}/v1/sys/mounts/secret" \
+                -d '{"type":"kv","options":{"version":"2"}}' || true
+
+              echo "Enabling kubernetes auth method..."
+              curl -s -X POST -H "$AUTH" \
+                "${BAO_ADDR}/v1/sys/auth/kubernetes" \
+                -d '{"type":"kubernetes"}' || true
+
+              KUBE_CA=$(cat /var/run/secrets/kubernetes.io/serviceaccount/ca.crt)
+              curl -sf -X POST -H "$AUTH" \
+                "${BAO_ADDR}/v1/auth/kubernetes/config" \
+                -d "$(jq -n \
+                  --arg host "https://kubernetes.default.svc" \
+                  --arg ca "$KUBE_CA" \
+                  '{kubernetes_host:$host,kubernetes_ca_cert:$ca,disable_iss_validation:true}')"
+
+              echo "Writing eso-home-read policy..."
+              # Grants access to BOTH home/* and preview/* paths.
+              # Preview cluster was merged into home (2026-04-27); ESO
+              # resources still reference preview/* keys to avoid
+              # rekeying every secret. Backup files in
+              # k8-infra-openbao-backup-* use preview/ paths too.
+              # users/* covers per-user secrets (e.g. hermes
+              # reads users/admin/hermes + users/dev2/hermes).
+              POLICY='path "secret/data/home/*" { capabilities = ["read"] }
+              path "secret/metadata/home/*" { capabilities = ["read", "list"] }
+              path "secret/data/preview/*" { capabilities = ["read"] }
+              path "secret/metadata/preview/*" { capabilities = ["read", "list"] }
+              path "secret/data/users/*" { capabilities = ["read"] }
+              path "secret/metadata/users/*" { capabilities = ["read", "list"] }'
+              curl -sf -X PUT -H "$AUTH" \
+                "${BAO_ADDR}/v1/sys/policies/acl/eso-home-read" \
+                -d "$(jq -n --arg p "$POLICY" '{policy:$p}')"
+
+              echo "Creating external-secrets role..."
+              curl -sf -X POST -H "$AUTH" \
+                "${BAO_ADDR}/v1/auth/kubernetes/role/external-secrets" \
+                -d '{
+                  "bound_service_account_names":"external-secrets",
+                  "bound_service_account_namespaces":"external-secrets",
+                  "policies":"eso-home-read",
+                  "ttl":"1h"
+                }'
+
+              echo "Bootstrap complete."
+      volumes:
+        - name: tmp
+          emptyDir: {}

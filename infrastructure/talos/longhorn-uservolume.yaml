@@ -1,0 +1,44 @@
+# Talos UserVolumeConfig — provisions a dedicated data disk for Longhorn.
+#
+# Uses a disk selector to pick ANY attached disk larger than 50 GiB that
+# isn't the system disk. This matches how Proxmox/VMware typically attach
+# a second virtio disk to each worker VM.
+#
+# The volume gets formatted as XFS and mounted at /var/mnt/longhorn on
+# each worker. Longhorn's defaultDataPath is then set to /var/mnt/longhorn
+# so all volume data lands on this disk instead of the root filesystem.
+#
+# Apply via Omni:
+#   Cluster → Machine Classes → Workers → Config Patches → Add
+#   Paste this document → Save & Sync → reboot each worker in sequence.
+#
+# Apply via talosctl (worker nodes only, NOT control planes):
+#   talosctl -n <worker-1-ip>,<worker-2-ip>,<worker-3-ip> \
+#     patch machineconfig --patch @infrastructure/talos/longhorn-uservolume.yaml
+#   # reboot one at a time:
+#   talosctl -n <worker-ip> reboot
+#
+# After the reboot, verify mount:
+#   talosctl -n <worker-ip> get mounts | grep longhorn
+#   # expected: /var/mnt/longhorn  xfs  rw,...
+#
+# Ref:
+#   https://www.talos.dev/v1.12/configuration/user-volumes/
+
+apiVersion: v1alpha1
+kind: UserVolumeConfig
+name: longhorn
+provisioning:
+  # Select disks > 50 GiB that aren't the system disk. On a standard
+  # worker layout this picks up /dev/vdb (data disk) and skips /dev/vda
+  # (root) and any attached iSCSI/loop devices.
+  diskSelector:
+    match: "!system_disk && disk.size > 50u*GiB"
+  # minSize is the floor for accepting a candidate disk. Omit maxSize
+  # entirely so Talos treats it as unbounded — setting `maxSize: 0`
+  # is rejected by the validator with "min size is greater than max size".
+  minSize: 50GiB
+  grow: true
+
+filesystem:
+  type: xfs

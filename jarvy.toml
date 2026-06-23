@@ -1,0 +1,121 @@
+# jarvy.toml — Development environment for k8-infra
+#
+# Run: jarvy setup
+# Installs every CLI used by the Makefile and ci/scripts/* so a fresh laptop
+# can validate, render, bootstrap, and publish without hunting for tools.
+
+[privileges]
+use_sudo = true
+
+[privileges.per_os]
+linux = true
+macos = false
+windows = false
+
+# =============================================================================
+# Core CUE workflow — `make validate`, `make export`, `make apply`
+# =============================================================================
+[provisioner]
+# CUE evaluator. Module pins language: version: "v0.16.1" in cue.mod/module.cue;
+# allow 0.16.x patches but block a 0.17 jump that could change render output.
+cue = "~0.16"
+
+# Manifest plumbing — Makefile pipes `cue export` through yq, scripts use jq.
+yq = "latest"
+jq = "latest"
+
+# GitHub CLI — used by ci/scripts/feature-*, autofix-dispatch, OAuth refresh, etc.
+gh = "latest"
+
+# =============================================================================
+# Kubernetes — apply, render-helm, golden tests
+# =============================================================================
+kubectl = "latest"
+helm = "latest"   # ci/scripts/render-helm.sh expands HelmRelease tarballs
+docker = "latest" # required runtime for `kind` clusters in e2e tests
+
+# =============================================================================
+# Cluster bootstrap — ci/scripts/bootstrap-home.sh, apply-omni-patches.sh
+# =============================================================================
+talosctl = "latest"
+omnictl = "latest"
+
+# =============================================================================
+# OCI artifact publish — `make publish`
+# =============================================================================
+oras = "latest"
+
+# =============================================================================
+# Testing — `make test-raw`, test-kyverno, test-e2e
+# =============================================================================
+kind = "latest"     # local cluster for e2e + kyverno tests
+argocd = "latest"   # Argo CD CLI for sync/diagnostic commands
+
+# Tools not yet in the jarvy registry are installed via the `pre_setup`
+# hook below using Homebrew. macOS-only path; on Linux these need to be
+# installed manually (or via the distro's package manager).
+
+# =============================================================================
+# Hooks
+# =============================================================================
+[hooks]
+# Install the tools that aren't yet in jarvy's built-in registry.
+# Idempotent: skips anything already on PATH. macOS / Homebrew only —
+# on Linux these brew calls no-op (no `brew` on PATH) and you'll get a
+# warning. Re-PR these into jarvy upstream to retire this hook.
+pre_setup = """
+if ! command -v brew >/dev/null 2>&1; then
+    echo "[k8-infra] brew not found — skipping non-registry tool install."
+    echo "[k8-infra] Install manually: openbao kubeconform velero kyverno-chainsaw cloudflared fswatch pluto"
+else
+    install_if_missing() {
+        bin="$1"; formula="$2"
+        if command -v "$bin" >/dev/null 2>&1; then
+            echo "[k8-infra] $bin already installed — skipping"
+        else
+            echo "[k8-infra] installing $formula ..."
+            brew install "$formula"
+        fi
+    }
+    install_if_missing bao         openbao
+    install_if_missing kubeconform kubeconform
+    install_if_missing velero      velero
+    install_if_missing chainsaw    kyverno-chainsaw
+    install_if_missing cloudflared cloudflared
+    install_if_missing fswatch     fswatch
+    install_if_missing pluto       FairwindsOps/tap/pluto
+fi
+"""
+
+post_setup = """
+echo ""
+echo "=========================================="
+echo "  k8-infra dev environment ready"
+echo "=========================================="
+echo ""
+echo "Next steps:"
+echo "  1. make validate                          # cue vet ./..."
+echo "  2. make export-cluster CLUSTER=home       # render YAML"
+echo "  3. ci/scripts/bootstrap-home.sh --check-only   # preflight a fresh cluster"
+echo ""
+echo "See CLAUDE.md for the full command reference."
+echo ""
+"""
+
+[hooks.config]
+timeout = 60
+continue_on_error = true
+
+# =============================================================================
+# Drift detection — flag if cue.mod/module.cue or Makefile drifts from the
+# versions the rendered output was validated against.
+# =============================================================================
+[drift]
+enabled = true
+check_on_run = false
+track_files = ["cue.mod/module.cue", "Makefile"]
+version_policy = "minor"
+
+[env.config]
+generate_dotenv = false
+update_rc = false

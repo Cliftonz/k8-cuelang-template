@@ -1,0 +1,81 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: ci-fixer-k8-infra
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 1
+  pollInterval: 1m
+  when:
+    githubPullRequests:
+      state: open
+      commentPolicy:
+        triggerComment: /fix-ci
+        minimumPermission: write
+      reporting:
+        enabled: true
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: k8-infra
+    agentConfigRef:
+      name: ci-fixer-k8-infra
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    promptTemplate: |-
+      CI failed on PR #{{.Number}} ({{.Title}}) on branch
+      {{.Branch}}. The PR branch is already checked out.
+
+      Step 1. Read the most recent `/fix-ci` comment on
+      this PR. It contains ONE OR MORE "Failure N of M" blocks.
+      Each block gives you, for a single failing step:
+        - Workflow name + workflow file path
+        - Job name + job URL
+        - Step number + step name
+        - The EXACT command that failed (verbatim `run:` block)
+        - Its exit code
+        - Top 3 error-level log lines (headline error)
+        - Annotations (file:line:level:message)
+        - Last 200 lines of that step's log
+
+      Fetch the comment:
+        gh pr view {{.Number}} --comments --json comments \
+          --jq '.comments | map(select(.body | startswith("/fix-ci"))) | last.body'
+
+      Step 2. For EACH "Failure N of M" block, in order:
+        a. Run the command shown under "Command that failed"
+           verbatim in the workspace root.
+        b. Confirm the same exit code + headline error.
+        c. Fix ONLY files named in the block's annotations or
+           log tail, or explicitly referenced by the headline
+           error. Nothing else.
+        d. Re-run the same command. It MUST pass before
+           moving to the next failure or pushing.
+
+      If two failures share a root cause, fix once + verify
+      both. If independent, fix each independently.
+
+      Step 3. Commit. Subject: `fix(autofix): <one-line>`.
+      Body: for each failure, one line listing workflow/job/step
+      and what you changed.
+
+      Step 4. Push to {{.Branch}}. Stop. CI re-runs
+      automatically on the push.
+
+      Hard stops (from AgentConfig):
+        - No edits outside the scope listed in the comment.
+        - No disabling of tests/lint/policy rules.
+        - No dependency bumps.
+        - If the required fix would violate scope, post a
+          comment explaining + stop. Do not push.
+        - If the command passes with no edits (flake), post
+          a comment explaining + stop. No no-op commit.
+    ttlSecondsAfterFinished: 86400

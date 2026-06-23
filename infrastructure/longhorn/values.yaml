@@ -1,0 +1,74 @@
+# Longhorn — Helm values
+# Chart: longhorn/longhorn
+#
+# Prerequisites on every node that will host Longhorn volumes:
+#   - iscsi-tools Talos extension (provides iscsiadm)
+#   - util-linux-tools Talos extension (provides fstrim, losetup)
+#   - /var/lib/longhorn mount point writable
+#
+# Docs: https://longhorn.io/docs/latest/deploy/install/install-with-helm/
+
+defaultSettings:
+  # Longhorn uses this path on each node for volume data. On Talos workers,
+  # we provision a dedicated data disk via UserVolume (see
+  # infrastructure/talos/longhorn-uservolume.yaml) that formats /dev/vdb
+  # and mounts it at /var/mnt/longhorn. Keeping Longhorn's data off the
+  # root filesystem prevents the root disk from filling up during normal
+  # volume use.
+  defaultDataPath: /var/mnt/longhorn
+
+  # Default replica count for new volumes. Override per-volume via PVC
+  # annotations if you need different durability semantics.
+  defaultReplicaCount: 2
+
+  # Automatically delete backing PV when the PVC is deleted. Required for
+  # preview environments where Argo CD prunes namespaces on PR close.
+  persistentVolumeReclaimPolicy: Delete
+
+  # Schedule volume replicas across different nodes, not different disks.
+  replicaAutoBalance: best-effort
+
+  # Block guaranteed scheduling until enough nodes are healthy. Prevents
+  # volume creation on a degraded cluster.
+  storageMinimalAvailablePercentage: 10
+
+  # Disable orphaned replica auto-delete until operations is familiar with
+  # the behavior. Can be enabled later via `kubectl edit settings`.
+  orphanAutoDeletion: false
+
+# Default StorageClass created by the chart. We annotate it as the cluster
+# default so PVCs without an explicit storageClass land on Longhorn.
+persistence:
+  defaultClass: true
+  defaultClassReplicaCount: 2
+  reclaimPolicy: Delete
+  # Wait for a pod to claim the volume before provisioning so the replica
+  # lands on a node near the pod.
+  defaultDataLocality: best-effort
+  # Allow online resize.
+  defaultFsType: ext4
+
+ingress:
+  # Longhorn UI — expose internally only. Ingress is not created here; if
+  # you need the UI, port-forward: kubectl port-forward -n longhorn-system svc/longhorn-frontend 8080:80
+  enabled: false
+
+# Resource limits for Longhorn components.
+longhornManager:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+longhornDriver:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+longhornUI:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi

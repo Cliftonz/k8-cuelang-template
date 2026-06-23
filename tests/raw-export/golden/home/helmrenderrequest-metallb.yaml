@@ -1,0 +1,35 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: metallb
+  namespace: metallb-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: metallb
+    repository: https://metallb.github.io/metallb
+    version: 0.16.1
+  values:
+    controller:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+    speaker:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      frr:
+        enabled: false

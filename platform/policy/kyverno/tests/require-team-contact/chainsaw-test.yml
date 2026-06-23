@@ -1,0 +1,81 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-team-contact-valid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../require-team-contact.yaml
+    - try:
+        - apply:
+            file: ./namespace-app-dev.yml
+    - try:
+        - apply:
+            file: ./valid-deployment.yml
+            expect:
+              - match:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: team-contact-valid
+                    namespace: team-contact-dev
+                check:
+                  ($error == null): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-team-contact-invalid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../require-team-contact.yaml
+    - try:
+        - apply:
+            file: ./namespace-app-dev.yml
+    - try:
+        - apply:
+            file: ./invalid-deployment.yml
+            expect:
+              - match:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: team-contact-invalid
+                    namespace: team-contact-dev
+                check:
+                  ($error != null): true
+                  (contains($error, 'Workloads must include metadata for owning team and contact information')): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: require-team-contact-excluded-namespace
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../require-team-contact.yaml
+    - try:
+        - apply:
+            file: ./namespace-non-dev.yml
+    - try:
+        - apply:
+            file: ./excluded-deployment.yml
+            expect:
+              - match:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: team-contact-excluded
+                    namespace: team-contact-non-dev
+                check:
+                  ($error == null): true

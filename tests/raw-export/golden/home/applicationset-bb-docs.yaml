@@ -1,0 +1,108 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: bb-docs
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  generators:
+    - list:
+        elements:
+          - {}
+  ignoreApplicationDifferences:
+    - jsonPointers:
+        - /spec/source/helm/parameters
+  template:
+    metadata:
+      name: bb-docs
+      labels:
+        app.kubernetes.io/part-of: bb-apps
+        appslug: docs
+      annotations:
+        argocd.argoproj.io/compare-options: ServerSideDiff=true
+      finalizers:
+        - resources-finalizer.argoproj.io
+    spec:
+      project: bb-apps
+      source:
+        repoURL: https://bjw-s-labs.github.io/helm-charts
+        chart: app-template
+        targetRevision: 3.7.3
+        helm:
+          valuesObject:
+            controllers:
+              main:
+                containers:
+                  main:
+                    image:
+                      repository: ghcr.io/example-org/knowledge-base
+                      tag: latest
+                    probes:
+                      liveness:
+                        enabled: false
+                      readiness:
+                        enabled: false
+                      startup:
+                        enabled: false
+            service:
+              main:
+                controller: main
+                ports:
+                  http:
+                    port: 8080
+            ingress:
+              main:
+                enabled: true
+                className: traefik
+                annotations:
+                  cert-manager.io/cluster-issuer: openbao-example-internal
+                  external-dns.alpha.kubernetes.io/target: 192.168.1.235
+                  gethomepage.dev/enabled: "true"
+                  gethomepage.dev/name: BB Docs
+                  gethomepage.dev/group: Platform
+                  gethomepage.dev/icon: bookstack.png
+                  gethomepage.dev/description: Example Org knowledge base
+                  gethomepage.dev/href: https://bb-docs.example.internal
+                  gethomepage.dev/siteMonitor: https://bb-docs.example.internal
+                hosts:
+                  - host: bb-docs.example.internal
+                    paths:
+                      - path: /
+                        pathType: Prefix
+                        service:
+                          identifier: main
+                          port: http
+                tls:
+                  - secretName: bb-docs-tls
+                    hosts:
+                      - bb-docs.example.internal
+            defaultPodOptions:
+              imagePullSecrets:
+                - name: ghcr-pull-secret
+      destination:
+        name: in-cluster
+        namespace: bb-docs
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            app.kubernetes.io/part-of: bb-apps
+            appslug: docs
+            infra.k8/tier: dev
+            infra.k8/cluster: home
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

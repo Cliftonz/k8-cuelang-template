@@ -1,0 +1,137 @@
+package xrd
+
+// XRoleBinding defines the CompositeResourceDefinition for RoleBinding provisioning.
+#XRoleBinding: {
+	apiVersion: "apiextensions.crossplane.io/v2"
+	kind:       "CompositeResourceDefinition"
+	metadata: name: "xrolebindings.\(#ApiGroup)"
+	spec: {
+		group: #ApiGroup
+		scope: "Cluster"
+		names: {
+			kind:   "XRoleBinding"
+			plural: "xrolebindings"
+		}
+		versions: [{
+			name:          "v1alpha1"
+			served:        true
+			referenceable: true
+			schema: openAPIV3Schema: {
+				type:        "object"
+				description: "Request a Kubernetes RoleBinding with standard labels and ownership metadata applied."
+				properties: spec: {
+					type:        "object"
+					description: "Desired RoleBinding settings and subject/role references."
+					example: {
+						name:      "team-platform-admins"
+						namespace: "platform-system"
+						tier:      "dev"
+						cluster:   "new-dev"
+						owner:     "platform-team"
+						roleRef: {
+							apiGroup: "rbac.authorization.k8s.io"
+							kind:     "ClusterRole"
+							name:     "cluster-admin"
+						}
+						subjects: [
+							{
+								kind:     "Group"
+								name:     "platform-admins"
+								apiGroup: "rbac.authorization.k8s.io"
+							},
+						]
+					}
+					"x-docs": {
+						provider: "provider-kubernetes"
+						policyRefs: [
+							"libs/tiers/tier.cue",
+						]
+						behavior: [
+							"Creates a RoleBinding in the target namespace.",
+							"RoleRef may point to a Role or ClusterRole.",
+						]
+						gotchas: [
+							"ServiceAccount subjects require a namespace field.",
+							"RoleBinding names must be unique per namespace.",
+						]
+					}
+					properties: {
+						name: {
+							type:        "string"
+							description: "RoleBinding resource name to create."
+							pattern:     "^[a-z][a-z0-9-]*$"
+						}
+						namespace: {
+							type:        "string"
+							description: "Namespace where the RoleBinding will be created."
+							pattern:     "^[a-z][a-z0-9-]*$"
+						}
+						tier: {
+							type:        "string"
+							description: "Tier used for labeling and policy selection."
+							enum: ["dev", "staging", "production"]
+						}
+						cluster: {
+							type:        "string"
+							description: "Logical cluster identifier used for labeling and placement."
+						}
+						owner: {
+							type:        "string"
+							description: "Owning team or service for accountability and routing."
+						}
+						roleRef: {
+							type:        "object"
+							description: "Reference to the Role or ClusterRole to bind."
+							properties: {
+								apiGroup: {
+									type:        "string"
+									description: "API group of the referenced role (usually rbac.authorization.k8s.io)."
+								}
+								kind: {
+									type:        "string"
+									description: "Role type to bind."
+									enum: ["Role", "ClusterRole"]
+								}
+								name: {
+									type:        "string"
+									description: "Name of the referenced Role or ClusterRole."
+								}
+							}
+							required: ["apiGroup", "kind", "name"]
+						}
+						subjects: {
+							type:        "array"
+							description: "Subjects (users, groups, or service accounts) to bind to the role."
+							items: {
+								type: "object"
+								properties: {
+									kind: {
+										type:        "string"
+										description: "Subject kind."
+										enum: ["User", "Group", "ServiceAccount"]
+									}
+									name: {
+										type:        "string"
+										description: "Subject name."
+									}
+									apiGroup: {
+										type:        "string"
+										description: "API group for User or Group subjects."
+									}
+									namespace: {
+										type:        "string"
+										description: "Namespace for ServiceAccount subjects."
+									}
+								}
+								required: ["kind", "name"]
+							}
+						}
+					}
+					required: ["name", "namespace", "tier", "cluster", "owner", "roleRef", "subjects"]
+				}
+			}
+		}]
+	}
+}
+
+xRoleBinding: #XRoleBinding

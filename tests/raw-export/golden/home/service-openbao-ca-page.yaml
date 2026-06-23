@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: openbao-ca-page
+  namespace: cert-distribution
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: openbao-ca-page
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP

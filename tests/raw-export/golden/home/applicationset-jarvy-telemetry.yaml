@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: jarvy-telemetry
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  generators:
+    - list:
+        elements:
+          - {}
+  template:
+    metadata:
+      name: jarvy-telemetry
+      labels:
+        app.kubernetes.io/part-of: bb-platform
+      finalizers:
+        - resources-finalizer.argoproj.io
+    spec:
+      project: bb-platform
+      source:
+        repoURL: ghcr.io/example-org/charts
+        chart: jarvy-telemetry-forwarder
+        targetRevision: 0.6.0
+        helm:
+          valuesObject:
+            gatewayApi:
+              enabled: false
+            tls:
+              certManager:
+                enabled: false
+            secrets:
+              strategy: existing
+            networkPolicy:
+              enabled: true
+              ingressNamespace: cloudflared
+              monitoringNamespace: monitoring
+            serviceMonitor:
+              enabled: false
+            prometheusRule:
+              enabled: false
+            collector:
+              resources:
+                requests:
+                  cpu: 100m
+                  memory: 512Mi
+                limits:
+                  memory: 1536Mi
+              pipeline:
+                memoryLimiter:
+                  limitMib: 1000
+                  spikeLimitMib: 250
+      destination:
+        name: in-cluster
+        namespace: jarvy-telemetry
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            app.kubernetes.io/part-of: bb-platform
+            infra.k8/tier: dev
+            infra.k8/cluster: home
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

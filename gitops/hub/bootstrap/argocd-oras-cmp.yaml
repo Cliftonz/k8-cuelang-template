@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cmp-cm
+  namespace: argocd
+data:
+  plugins: |
+    - name: oras
+      discover:
+        fileName: oci-artifact.yaml
+      generate:
+        command: ["sh", "-c"]
+        args:
+          - |
+            set -eu
+            work=/tmp/oras
+            rm -rf "$work"
+            mkdir -p "$work"
+            oras pull "${OCI_REF}" -o "$work"
+            find "$work" -type f \( -name "*.yaml" -o -name "*.yml" \) -print0 | \
+              sort -z | \
+              xargs -0 -I{} sh -c 'printf "---\n"; cat "{}"'

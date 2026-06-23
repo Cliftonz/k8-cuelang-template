@@ -1,0 +1,48 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: enforce-vpa-on-workloads
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: require-vpa-for-deployments
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+      context:
+        - name: hasVPA
+          apiCall:
+            urlPath: "/apis/autoscaling.k8s.io/v1/namespaces/{{ request.namespace }}/verticalpodautoscalers"
+      preconditions:
+        all:
+          - key: "{{ request.operation }}"
+            operator: Equals
+            value: CREATE
+      validate:
+        message: "Deployments must have a corresponding VerticalPodAutoscaler in the same namespace."
+        deny:
+          conditions:
+            all:
+              - key: "{{ hasVPA.items[].spec.targetRef.name }}"
+                operator: NotIn
+                value: "{{ request.object.metadata.name }}"
+    - name: vpa-initial-mode-for-statefulsets
+      match:
+        any:
+          - resources:
+              kinds:
+                - VerticalPodAutoscaler
+      validate:
+        message: "VPAs for StatefulSets must have updateMode set to 'Initial'."
+        deny:
+          conditions:
+            all:
+              - key: "{{ request.object.spec.targetRef.kind }}"
+                operator: Equals
+                value: StatefulSet
+              - key: "{{ request.object.spec.updatePolicy.updateMode }}"
+                operator: NotEquals
+                value: Initial

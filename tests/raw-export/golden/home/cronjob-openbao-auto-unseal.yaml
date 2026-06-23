@@ -1,0 +1,118 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openbao-auto-unseal
+  namespace: openbao
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: '*/15 * * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: openbao-auto-unseal
+          restartPolicy: Never
+          containers:
+            - name: unseal
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+                  # alpine/k8s ships jq + curl already; no apk add
+                  # (which would fail under readOnlyRootFilesystem
+                  # + runAsNonRoot anyway).
+
+                  BAO_ADDR="http://openbao.openbao.svc:8200"
+
+                  # 1. seal-status: is OpenBao sealed?
+                  STATUS=$(curl -sfS "${BAO_ADDR}/v1/sys/seal-status" || echo '{"sealed":"network-error"}')
+                  SEALED=$(echo "$STATUS" | jq -r '.sealed')
+
+                  if [ "$SEALED" = "false" ]; then
+                  	echo "openbao unsealed; nothing to do"
+                  	exit 0
+                  fi
+
+                  if [ "$SEALED" = "network-error" ]; then
+                  	echo "could not reach $BAO_ADDR/v1/sys/seal-status — openbao may be Pending or NP-blocked. Exiting without action." >&2
+                  	exit 1
+                  fi
+
+                  echo "openbao is SEALED — attempting auto-unseal"
+
+                  # 2. Attempt unseal with the stored key.
+                  UNSEAL_KEY=$(cat /run/openbao-keys/unseal-key)
+                  UNSEAL_RESP=$(curl -sS -X POST -H "Content-Type: application/json" \
+                  	-d "$(jq -nc --arg k "$UNSEAL_KEY" '{key:$k}')" \
+                  	"${BAO_ADDR}/v1/sys/unseal" || echo '{}')
+                  NOW_SEALED=$(echo "$UNSEAL_RESP" | jq -r '.sealed // "unknown"')
+
+                  # 3. Post Discord with the outcome. Single message
+                  # covers both "we detected it sealed" AND result, so
+                  # the operator gets one notification per event.
+                  WEBHOOK=$(cat /run/discord/url 2>/dev/null || true)
+                  if [ -n "$WEBHOOK" ]; then
+                  	if [ "$NOW_SEALED" = "false" ]; then
+                  		BODY=$(printf '{"content":":unlock: **OpenBao auto-unseal** — was sealed, now unsealed. Likely cause: openbao-0 pod restart. Investigate restart cause in `kubectl -n openbao describe pod openbao-0`."}')
+                  	else
+                  		ERR=$(echo "$UNSEAL_RESP" | jq -c '.errors // .' 2>/dev/null || echo "$UNSEAL_RESP")
+                  		BODY=$(printf '{"content":":fire: **OpenBao auto-unseal FAILED** — still sealed after attempt. Response: `%s`. Run `ci/scripts/unseal-openbao.sh` from a laptop or investigate manually."}' "$ERR")
+                  	fi
+                  	curl -sS -X POST -H 'Content-Type: application/json' \
+                  		-d "$BODY" "$WEBHOOK" >/dev/null || \
+                  		echo "discord post failed (continuing)" >&2
+                  fi
+
+                  # 4. Exit code reflects unseal outcome so kubectl
+                  # pod state surfaces failures even if Discord drops.
+                  if [ "$NOW_SEALED" = "false" ]; then
+                  	echo "auto-unseal complete"
+                  	exit 0
+                  else
+                  	echo "auto-unseal failed: $UNSEAL_RESP" >&2
+                  	exit 1
+                  fi
+              volumeMounts:
+                - name: openbao-keys
+                  mountPath: /run/openbao-keys
+                  readOnly: true
+                - name: discord
+                  mountPath: /run/discord
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+          volumes:
+            - name: openbao-keys
+              secret:
+                secretName: openbao-keys
+            - name: discord
+              secret:
+                secretName: discord-webhook-openbao
+          automountServiceAccountToken: false

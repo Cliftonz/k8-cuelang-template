@@ -1,0 +1,6 @@
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-harbor
+spec:
+  package: xpkg.upbound.io/globallogicuki/provider-harbor:v3.11.2

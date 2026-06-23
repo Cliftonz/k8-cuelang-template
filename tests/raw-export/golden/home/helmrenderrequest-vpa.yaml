@@ -1,0 +1,51 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: vpa
+  namespace: vpa-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: vpa
+    repository: https://charts.fairwinds.com/stable
+    version: 4.12.2
+  values:
+    recommender:
+      enabled: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 1Gi
+      extraArgs:
+        prometheus-address: ""
+    updater:
+      enabled: true
+      extraArgs:
+        feature-gates: InPlaceOrRecreate=true
+        min-replicas: "1"
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 512Mi
+    admissionController:
+      enabled: true
+      extraArgs:
+        feature-gates: InPlaceOrRecreate=true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi

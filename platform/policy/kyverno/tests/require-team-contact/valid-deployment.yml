@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: team-contact-valid
+  namespace: team-contact-dev
+  labels:
+    app.kubernetes.io/team: platform
+    app.kubernetes.io/contact: oncall@example.com
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: team-contact-valid
+  template:
+    metadata:
+      labels:
+        app: team-contact-valid
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.25
+          ports:
+            - containerPort: 80

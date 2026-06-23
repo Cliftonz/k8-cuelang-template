@@ -1,0 +1,54 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pdb-avoid-blocking-disruptions-valid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../pdb-avoid-blocking-disruptions.yaml
+    - try:
+        - apply:
+            file: ./namespace.yml
+    - try:
+        - apply:
+            file: ./valid-pdb.yml
+            expect:
+              - match:
+                  apiVersion: policy/v1
+                  kind: PodDisruptionBudget
+                  metadata:
+                    name: pdb-disruptions-valid
+                    namespace: kyverno-pdb-disruptions
+                check:
+                  ($error == null): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: pdb-avoid-blocking-disruptions-invalid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../pdb-avoid-blocking-disruptions.yaml
+    - try:
+        - apply:
+            file: ./namespace.yml
+    - try:
+        - apply:
+            file: ./invalid-pdb.yml
+            expect:
+              - match:
+                  apiVersion: policy/v1
+                  kind: PodDisruptionBudget
+                  metadata:
+                    name: pdb-disruptions-invalid
+                    namespace: kyverno-pdb-disruptions
+                check:
+                  ($error != null): true
+                  (contains($error, 'Avoid PDBs that block voluntary disruptions')): true

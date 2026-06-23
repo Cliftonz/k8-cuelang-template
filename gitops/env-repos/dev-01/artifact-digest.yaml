@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-artifact
+  namespace: argocd
+data:
+  artifact: "oci://registry.example.com/k8-infra/platform@sha256:0000000000000000000000000000000000000000000000000000000000000000"

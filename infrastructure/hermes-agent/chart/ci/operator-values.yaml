@@ -1,0 +1,29 @@
+operator:
+  enabled: true
+  controllerClass: hermes.ai/default
+  installCustomResources: true
+  defaultChartValues:
+    apiServer:
+      enabled: true
+      port: 8642
+    service:
+      enabled: true
+  tenants:
+    - name: hermes-tenant-a
+      namespace: tenant-a
+      tenantId: tenant-a
+      labels:
+        hermes.nous.ai/environment: prod
+      chartValues:
+        tenant:
+          id: tenant-a
+        externalSecret:
+          enabled: true
+          secretStoreRef:
+            kind: ClusterSecretStore
+            name: platform-secrets
+          data:
+            - secretKey: OPENROUTER_API_KEY
+              remoteRef:
+                key: hermes-agent/tenant-a
+                property: OPENROUTER_API_KEY

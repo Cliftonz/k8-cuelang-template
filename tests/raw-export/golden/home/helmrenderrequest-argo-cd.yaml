@@ -1,0 +1,149 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: argo-cd
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: argo-cd
+    repository: https://argoproj.github.io/argo-helm
+    version: 9.6.0
+  values:
+    crds:
+      install: true
+    configs:
+      params:
+        server.insecure: true
+      cm:
+        url: https://argocd.example.internal
+        oidc.config: |-
+          name: Dex
+          issuer: https://dex.example.com
+          clientID: argocd
+          clientSecret: $argocd-dex-client:client_secret
+          requestedScopes:
+            - openid
+            - profile
+            - email
+            - groups
+          requestedIDTokenClaims:
+            groups:
+              essential: true
+      rbac:
+        policy.default: role:readonly
+        policy.csv: |-
+          g, eng-admin@example.com, role:admin
+          g, eng-readonly@example.com, role:readonly
+    server:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+      service:
+        annotations:
+          omni-kube-service-exposer.sidero.dev/port: "50080"
+          omni-kube-service-exposer.sidero.dev/label: Argo CD
+          omni-kube-service-exposer.sidero.dev/prefix: argocd
+    controller:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 250m
+          memory: 1Gi
+        limits:
+          cpu: "1"
+          memory: 2Gi
+    applicationSet:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+    repoServer:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+    dex:
+      enabled: false
+    redis:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+    notifications:
+      enabled: true
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      services:
+        service.webhook.github: |-
+          url: https://api.github.com
+          headers:
+          - name: Authorization
+            value: token $github-token
+          - name: Accept
+            value: application/vnd.github+json
+        service.webhook.discord: |-
+          url: $discord-webhook-url
+          headers:
+          - name: Content-Type
+            value: application/json
+      triggers:
+        trigger.on-deployed: |-
+          - description: Preview synced and healthy
+            send: [github-deployment-status]
+            when: app.status.operationState.phase in ['Succeeded'] and app.status.health.status == 'Healthy'
+        trigger.on-health-degraded: |-
+          - description: Preview health degraded
+            send: [github-pr-comment-degraded]
+            when: app.status.health.status == 'Degraded'
+        trigger.on-ai-outage: |-
+          - description: Preview with AI dependency degraded
+            send: [discord-ai-outage]
+            when: app.status.health.status == 'Degraded' and app.metadata.annotations['preview.example.com/depends-on-ai'] == 'true'
+      templates:
+        template.github-deployment-status: |-
+          webhook:
+            github:
+              method: POST
+              path: /repos/{{.app.spec.source.repoURL | call "trimPrefix" "https://github.com/" | call "trimSuffix" ".git"}}/issues/{{.app.metadata.labels.pr-number}}/comments
+              body: |
+                {"body": "Preview deployed: https://{{.app.metadata.labels.appslug}}-pr-{{.app.metadata.labels.pr-number}}.example.internal"}
+        template.github-pr-comment-degraded: |-
+          webhook:
+            github:
+              method: POST
+              path: /repos/{{.app.spec.source.repoURL | call "trimPrefix" "https://github.com/" | call "trimSuffix" ".git"}}/issues/{{.app.metadata.labels.pr-number}}/comments
+              body: |
+                {"body": "Preview health degraded for {{.app.metadata.labels.appslug}}-pr-{{.app.metadata.labels.pr-number}}.example.internal"}
+        template.discord-ai-outage: |-
+          webhook:
+            discord:
+              method: POST
+              body: |
+                {"content": ":rotating_light: **AI outage detected** — `{{.app.metadata.name}}` is Degraded.\nApp: {{.app.metadata.labels.appslug}}  PR: #{{.app.metadata.labels.pr-number}}\nPreview: https://{{.app.metadata.labels.appslug}}-pr-{{.app.metadata.labels.pr-number}}.example.internal\nHealth: `{{.app.status.health.message}}`"}

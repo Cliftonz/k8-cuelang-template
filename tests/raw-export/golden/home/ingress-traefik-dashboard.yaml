@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: Traefik
+    gethomepage.dev/group: Platform
+    gethomepage.dev/icon: traefik.png
+    gethomepage.dev/description: Ingress controller dashboard
+    gethomepage.dev/href: http://traefik.example.internal
+    gethomepage.dev/siteMonitor: http://traefik.example.internal
+    gethomepage.dev/pod-selector: app.kubernetes.io/name=traefik
+    traefik.ingress.kubernetes.io/router.middlewares: oauth-proxy-auth-with-redirect@kubernetescrd
+  name: traefik-dashboard
+  namespace: traefik
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: traefik.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: traefik-dashboard
+                port:
+                  number: 8080
+  tls:
+    - secretName: traefik-dashboard-tls
+      hosts:
+        - traefik.example.internal

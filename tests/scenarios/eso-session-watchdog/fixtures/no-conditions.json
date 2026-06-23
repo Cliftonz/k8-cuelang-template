@@ -1,0 +1,12 @@
+{
+  "items": [
+    {
+      "metadata": {"name": "openbao-backend"},
+      "status": {}
+    },
+    {
+      "metadata": {"name": "events-backend"},
+      "status": {"conditions": []}
+    }
+  ]
+}

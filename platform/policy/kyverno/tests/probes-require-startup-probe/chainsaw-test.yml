@@ -1,0 +1,54 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: probes-require-startup-probe-valid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../probes-require-startup-probe.yaml
+    - try:
+        - apply:
+            file: ./namespace.yml
+    - try:
+        - apply:
+            file: ./valid-pod.yml
+            expect:
+              - match:
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: probes-startup-valid
+                    namespace: kyverno-probes-startup
+                check:
+                  ($error == null): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: probes-require-startup-probe-invalid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../probes-require-startup-probe.yaml
+    - try:
+        - apply:
+            file: ./namespace.yml
+    - try:
+        - apply:
+            file: ./invalid-pod.yml
+            expect:
+              - match:
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: probes-startup-invalid
+                    namespace: kyverno-probes-startup
+                check:
+                  ($error != null): true
+                  (contains($error, 'Add a startupProbe or increase liveness initialDelaySeconds')): true

@@ -1,0 +1,53 @@
+name: E2E
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'platform/**'
+      - 'libs/**'
+      - 'composites/**'
+      - 'export/**'
+      - 'ci/scripts/test-e2e.sh'
+  workflow_dispatch: {}
+
+# Heavy. Runs kind + applies the entire render to verify XRDs/compositions
+# reconcile cleanly. Skips unless a platform/composites/libs file changed.
+jobs:
+  e2e-kind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install CUE
+        run: |
+          curl -fsSL "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_amd64.tar.gz" | tar -xz
+          install -m 0755 cue /usr/local/bin/cue
+
+      - name: Install yq
+        run: |
+          curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+
+      - name: Setup kind
+        uses: helm/kind-action@v1
+        with:
+          version: v0.22.0
+          cluster_name: e2e-tests
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.0
+
+      - name: Render manifests
+        env:
+          SKIP_JARVY_DOCTOR: "1"
+        run: make export-cluster CLUSTER=preview
+
+      - name: Run test-e2e.sh
+        env:
+          KIND_CLUSTER_NAME: e2e-tests
+          CLUSTER: preview
+        run: ./ci/scripts/test-e2e.sh

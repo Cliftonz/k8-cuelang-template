@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: Honcho
+    gethomepage.dev/group: AI
+    gethomepage.dev/icon: openai.png
+    gethomepage.dev/description: Honcho dialectic memory (Dex-gated)
+    gethomepage.dev/href: https://honcho.example.internal/docs
+    gethomepage.dev/siteMonitor: http://honcho.example.internal/health
+    gethomepage.dev/pod-selector: app.kubernetes.io/name=honcho
+    traefik.ingress.kubernetes.io/router.middlewares: oauth-proxy-auth-with-redirect@kubernetescrd
+  name: honcho
+  namespace: honcho
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: honcho.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: honcho
+                port:
+                  number: 8000
+  tls:
+    - secretName: honcho-tls
+      hosts:
+        - honcho.example.internal

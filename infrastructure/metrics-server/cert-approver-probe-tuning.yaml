@@ -1,0 +1,34 @@
+# Strategic-merge patch over the upstream kubelet-serving-cert-approver
+# standalone-install.yaml. The default probes time out at 1s on a
+# memory-pressured cluster (observed on talos-home 2026-05-15: probe
+# failures every 5-15 minutes, ~18 restarts in 5h). The controller's
+# /healthz endpoint runs in the same event loop as CSR reconciliation —
+# under load the loop can pause >1s, which is enough to fail liveness
+# and trigger a restart.
+#
+# Bump:
+#   - timeoutSeconds: 1 → 5
+#   - periodSeconds:  10 → 30 (less frequent probes = less work)
+#   - failureThreshold: 3 → 5 (more tolerance for transient stalls)
+#
+# Effect: no false-positive restart loops; CSRs still get approved
+# within seconds because the approver wakes on Watch events, not on
+# probe cycles.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kubelet-serving-cert-approver
+  namespace: kubelet-serving-cert-approver
+spec:
+  template:
+    spec:
+      containers:
+        - name: cert-approver
+          livenessProbe:
+            timeoutSeconds: 5
+            periodSeconds: 30
+            failureThreshold: 5
+          readinessProbe:
+            timeoutSeconds: 5
+            periodSeconds: 30
+            failureThreshold: 5

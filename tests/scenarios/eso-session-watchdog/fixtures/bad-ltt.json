@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "metadata": {"name": "openbao-backend"},
+      "status": {
+        "conditions": [
+          {"type": "Ready", "status": "False", "reason": "Whatever",
+           "message": "?",
+           "lastTransitionTime": "not-an-rfc3339-timestamp"}
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+# Crossplane provider for GitHub. Wraps integrations/terraform-provider-github
+# via Upjet so we get declarative Repository, RepositoryWebhook, IssueLabel,
+# BranchProtection, etc. — same provider Crossplane Contrib publishes.
+#
+# Repo: https://github.com/crossplane-contrib/provider-upjet-github
+#
+# PAT scopes required (owner-level): repo, admin:repo_hook, admin:org (read).
+# Auth wired via ProviderConfig → Secret github-provider-creds in
+# crossplane-system, populated by ESO from OpenBao path
+# `secret/data/preview/github-pat`.
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-upjet-github
+spec:
+  package: ghcr.io/crossplane-contrib/provider-upjet-github:v0.19.0
+  # Limit memory; provider's CRDs are heavy on a small home cluster.
+  packagePullPolicy: IfNotPresent

@@ -1,0 +1,60 @@
+# DRA smoke test — one Pod with two containers SHARING a single GPU via
+# a ResourceClaimTemplate. If both containers see the same GPU device in
+# `nvidia-smi -L` output, DRA is wired correctly.
+#
+# Apply:
+#   kubectl create ns dra-gpu-share-test
+#   kubectl label ns dra-gpu-share-test pod-security.kubernetes.io/enforce=privileged --overwrite
+#   kubectl apply -f infrastructure/nvidia-dra-driver/example-pod.yaml
+#
+# Verify:
+#   kubectl -n dra-gpu-share-test logs pod -c ctr0
+#   kubectl -n dra-gpu-share-test logs pod -c ctr1
+# Both should print `GPU 0: <device-name>` with the same UUID.
+#
+# Cleanup:
+#   kubectl delete ns dra-gpu-share-test
+---
+apiVersion: resource.k8s.io/v1
+kind: ResourceClaimTemplate
+metadata:
+  name: single-gpu
+  namespace: dra-gpu-share-test
+spec:
+  spec:
+    devices:
+      requests:
+        - name: gpu
+          exactly:
+            deviceClassName: gpu.nvidia.com
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: pod
+  namespace: dra-gpu-share-test
+  labels:
+    app: pod
+spec:
+  containers:
+    - name: ctr0
+      image: ubuntu:22.04
+      command: ["bash", "-c"]
+      args: ["nvidia-smi -L; trap 'exit 0' TERM; sleep 9999 & wait"]
+      resources:
+        claims:
+          - name: shared-gpu
+    - name: ctr1
+      image: ubuntu:22.04
+      command: ["bash", "-c"]
+      args: ["nvidia-smi -L; trap 'exit 0' TERM; sleep 9999 & wait"]
+      resources:
+        claims:
+          - name: shared-gpu
+  resourceClaims:
+    - name: shared-gpu
+      resourceClaimTemplateName: single-gpu
+  tolerations:
+    - key: "nvidia.com/gpu"
+      operator: "Exists"
+      effect: "NoSchedule"

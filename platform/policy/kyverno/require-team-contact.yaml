@@ -1,0 +1,36 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-team-contact
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-team-contact-metadata
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+                - DaemonSet
+                - Job
+                - CronJob
+              namespaceSelector:
+                matchLabels:
+                  app-dev: "true"
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+      validate:
+        message: "Workloads must include metadata for owning team and contact information. Add labels app.kubernetes.io/team and app.kubernetes.io/contact."
+        pattern:
+          metadata:
+            labels:
+              app.kubernetes.io/team: "?*"
+              app.kubernetes.io/contact: "?*"

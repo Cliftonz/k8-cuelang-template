@@ -1,0 +1,98 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: code-explain
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: review-comment
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - created
+          - path: body.comment.body
+            type: string
+            value:
+              - ^/explain(\s|$)
+          - path: body.repository.full_name
+            type: string
+            value:
+              - ^example-org/
+  triggers:
+    - rateLimit:
+        unit: Minute
+        requestsPerUnit: 3
+      template:
+        name: create-explain-task
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: kelos.dev/v1alpha1
+              kind: Task
+              metadata:
+                name: code-explain-
+                namespace: kelos-system
+                labels:
+                  app.kubernetes.io/managed-by: argo-events
+                  kelos.dev/role: code-explain
+              spec:
+                type: claude-code
+                credentials:
+                  type: oauth
+                  secretRef:
+                    name: claude-code-oauth
+                agentConfigRef:
+                  name: code-explainer
+                ttlSecondsAfterFinished: 3600
+                podOverrides:
+                  env:
+                    - name: GH_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: github-app-token
+                          key: token
+                prompt: (filled by parameters)
+          parameters:
+            - src:
+                dependencyName: review-comment
+                dataKey: body.comment.id
+              dest: metadata.name
+              operation: append
+            - src:
+                dependencyName: review-comment
+                dataTemplate: |-
+                  A maintainer used `/explain` on line {{ .Input.body.comment.line }} of `{{ .Input.body.comment.path }}` in PR #{{ .Input.body.pull_request.number }} ({{ .Input.body.repository.full_name }}).
+
+                  Repo:            {{ .Input.body.repository.full_name }}
+                  PR number:       {{ .Input.body.pull_request.number }}
+                  PR title:        {{ .Input.body.pull_request.title }}
+                  Head SHA:        {{ .Input.body.pull_request.head.sha }}
+                  File:            {{ .Input.body.comment.path }}
+                  Line:            {{ .Input.body.comment.line }}
+                  Comment ID:      {{ printf "%.0f" .Input.body.comment.id }}
+                  Comment author:  {{ .Input.body.comment.user.login }}
+                  Reply endpoint:  /repos/{{ .Input.body.repository.full_name }}/pulls/{{ .Input.body.pull_request.number }}/comments/{{ printf "%.0f" .Input.body.comment.id }}/replies
+
+                  The maintainer's question (from the comment body):
+                  {{ .Input.body.comment.body }}
+
+                  Diff hunk around the line (shows a few lines of context):
+                  ```
+                  {{ .Input.body.comment.diff_hunk }}
+                  ```
+
+                  Follow your AgentConfig instructions. Post a threaded reply at the Reply endpoint above. Stop after posting.
+              dest: spec.prompt

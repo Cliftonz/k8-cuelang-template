@@ -1,0 +1,17 @@
+# Talos ConfigPatch payload — enable kubelet server-side certificate
+# rotation. Required for metrics-server to validate kubelet TLS without
+# --kubelet-insecure-tls. Paired with kubelet-serving-cert-approver
+# (see infrastructure/metrics-server/install.sh).
+#
+# Talos restarts kubelet IN-PLACE when this changes — no node reboot.
+# kubelet-serving-cert-approver auto-approves the new CSRs in ~30s/node.
+#
+# History (don't lose again): authored 2026-05-06 during Cilium migration,
+# but the 2026-05-14 cluster rebuild from base templates dropped it.
+# Re-applied 2026-05-15 after a stuck-Terminating namespace exposed the
+# gap. This file + the apply script prevent the next rebuild from
+# losing it.
+machine:
+  kubelet:
+    extraArgs:
+      rotate-server-certificates: "true"

@@ -1,0 +1,256 @@
+# Honcho — self-hosted memory infrastructure for stateful agents.
+# https://github.com/plastic-labs/honcho
+#
+# Layout: single pod, four containers sharing localhost.
+#   - api      → ghcr.io/plastic-labs/honcho:latest (FastAPI, port 8000)
+#   - deriver  → same image, runs `python -m src.deriver` (background worker)
+#   - postgres → pgvector/pgvector:pg15 (data on a 5Gi Longhorn PVC)
+#   - redis    → redis:8.2 (cache, ephemeral emptyDir)
+#
+# Auth model: AUTH_USE_AUTH=false. Access is gated by Traefik +
+# oauth2-proxy/Dex at the Ingress (defined in composites/home/ingresses.cue),
+# and by NetworkPolicy at the pod level. Honcho's optional JWT auth is off
+# for this internal-only deployment.
+#
+# Secrets: pulled from OpenBao via the hermes-secrets ExternalSecret pattern
+# (defined in composites/home/externalsecrets.cue → secret/home/honcho).
+# Seed before this deploys:
+#   bao kv put secret/home/honcho \
+#     LLM_OPENAI_API_KEY=<vercel-ai-gateway-key>
+#
+# LLM provider: Honcho calls an OpenAI-compatible endpoint for memory
+# extraction / summarization / dialectic / dream. We point each feature
+# at Vercel AI Gateway (same as Hermes uses) via the
+# MODEL_CONFIG__OVERRIDES__BASE_URL env vars below.
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: honcho-pgdata
+  namespace: honcho
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: longhorn
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: honcho-pg-init
+  namespace: honcho
+data:
+  # Loaded by the postgres image at first-boot from
+  # /docker-entrypoint-initdb.d/. Idempotent (uses IF NOT EXISTS).
+  init.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: honcho
+  namespace: honcho
+  labels:
+    app.kubernetes.io/name: honcho
+    app.kubernetes.io/managed-by: k8-infra
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate  # single pod owns the Postgres PVC; never run two
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: honcho
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: honcho
+      annotations:
+        # ESO/Reloader-style restart on Secret change.
+        reloader.stakater.com/auto: "true"
+    spec:
+      securityContext:
+        # Postgres needs uid 999 (postgres user) for the data dir; Redis runs
+        # as 999 too. Honcho runs as root by default in its image; we override
+        # below where possible.
+        fsGroup: 999
+      containers:
+        # ── API server ──────────────────────────────────────────────────
+        - name: api
+          image: ghcr.io/plastic-labs/honcho:latest
+          imagePullPolicy: IfNotPresent
+          # The image's default CMD runs FastAPI directly without alembic
+          # migrations. docker-compose's reference setup overrides with
+          # docker/entrypoint.sh which migrates first, then exec's fastapi.
+          # Mirror that here; otherwise the startup validator crashes the
+          # pod with "Required vector columns missing".
+          workingDir: /app
+          command: ["sh", "docker/entrypoint.sh"]
+          ports:
+            - name: http
+              containerPort: 8000
+              protocol: TCP
+          env:
+            # Connect to Postgres + Redis via localhost (same pod).
+            - name: DB_CONNECTION_URI
+              value: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
+            - name: CACHE_URL
+              value: redis://localhost:6379/0?suppress=true
+            - name: CACHE_ENABLED
+              value: "true"
+            - name: AUTH_USE_AUTH
+              value: "false"
+            - name: LOG_LEVEL
+              value: INFO
+            # Point Honcho's LLM client at Vercel AI Gateway (same gateway
+            # Hermes uses). Override base_url on each text-generating feature.
+            - name: DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: DIALECTIC_LEVELS__minimal__MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: DIALECTIC_LEVELS__low__MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: DIALECTIC_LEVELS__medium__MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: DIALECTIC_LEVELS__high__MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: DIALECTIC_LEVELS__max__MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: SUMMARY_MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: DREAM_DEDUCTION_MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: DREAM_INDUCTION_MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+            - name: EMBEDDING_MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+          envFrom:
+            - secretRef:
+                name: honcho-secrets  # synced from OpenBao via ESO
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits:   {cpu: 1,    memory: 1Gi}
+
+        # ── Deriver (background worker) ─────────────────────────────────
+        - name: deriver
+          image: ghcr.io/plastic-labs/honcho:latest
+          imagePullPolicy: IfNotPresent
+          command: ["/app/.venv/bin/python", "-m", "src.deriver"]
+          env:
+            - name: DB_CONNECTION_URI
+              value: postgresql+psycopg://postgres:postgres@localhost:5432/postgres
+            - name: CACHE_URL
+              value: redis://localhost:6379/0?suppress=true
+            - name: CACHE_ENABLED
+              value: "true"
+            - name: AUTH_USE_AUTH
+              value: "false"
+            - name: LOG_LEVEL
+              value: INFO
+            - name: DERIVER_MODEL_CONFIG__OVERRIDES__BASE_URL
+              value: https://ai-gateway.vercel.sh/v1
+          envFrom:
+            - secretRef:
+                name: honcho-secrets
+          resources:
+            requests: {cpu: 50m,  memory: 128Mi}
+            limits:   {cpu: 500m, memory: 512Mi}
+
+        # ── Postgres with pgvector ──────────────────────────────────────
+        - name: postgres
+          image: pgvector/pgvector:pg15
+          imagePullPolicy: IfNotPresent
+          args:
+            - postgres
+            - -c
+            - max_connections=200
+          ports:
+            - name: pg
+              containerPort: 5432
+              protocol: TCP
+          env:
+            - name: POSTGRES_DB
+              value: postgres
+            - name: POSTGRES_USER
+              value: postgres
+            # Trust auth — Postgres only listens on the pod's localhost; no
+            # external access. Honcho's API + deriver are the only clients.
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: trust
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          volumeMounts:
+            - name: pgdata
+              mountPath: /var/lib/postgresql/data
+            - name: pg-init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "postgres", "-d", "postgres"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 6
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+            limits:   {cpu: 1,    memory: 1Gi}
+
+        # ── Redis (cache only, ephemeral) ──────────────────────────────
+        - name: redis
+          image: redis:8.2
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: redis
+              containerPort: 6379
+              protocol: TCP
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+          resources:
+            requests: {cpu: 20m,  memory: 64Mi}
+            limits:   {cpu: 200m, memory: 256Mi}
+
+      volumes:
+        - name: pgdata
+          persistentVolumeClaim:
+            claimName: honcho-pgdata
+        - name: pg-init
+          configMap:
+            name: honcho-pg-init
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: honcho
+  namespace: honcho
+  labels:
+    app.kubernetes.io/name: honcho
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: honcho
+  ports:
+    - name: http
+      port: 8000
+      targetPort: http
+      protocol: TCP

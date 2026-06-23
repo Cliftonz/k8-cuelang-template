@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: IT Tools
+    gethomepage.dev/group: Tools
+    gethomepage.dev/icon: it-tools.png
+    gethomepage.dev/description: Swiss-army-knife dev tools
+    gethomepage.dev/href: http://it-tools.example.internal
+    gethomepage.dev/namespace: traefik
+    gethomepage.dev/pod-selector: app.kubernetes.io/name=traefik
+    gethomepage.dev/siteMonitor: http://it-tools.example.internal
+  name: it-tools
+  namespace: it-tools
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: it-tools.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: it-tools-backend
+                port:
+                  number: 80
+  tls:
+    - secretName: it-tools-tls
+      hosts:
+        - it-tools.example.internal

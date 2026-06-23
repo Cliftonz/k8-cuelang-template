@@ -1,0 +1,15 @@
+apiVersion: kelos.dev/v1alpha1
+kind: Workspace
+metadata:
+  name: jarvy
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  repo: https://github.com/example-org/Jarvy.git
+  secretRef:
+    name: github-app-token

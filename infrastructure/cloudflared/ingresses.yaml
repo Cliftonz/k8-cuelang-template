@@ -1,0 +1,71 @@
+# Cloudflare Tunnel edge ingresses — consumed by STRRL's
+# cloudflare-tunnel-ingress-controller. Each Ingress with
+# ingressClassName=cloudflare-tunnel becomes a tunnel ingress rule, a DNS
+# record in Cloudflare, and part of the tunnel's config, all managed by
+# the controller. No dashboard clicks.
+#
+# Kubernetes Ingress backends are namespace-scoped, so each Ingress lives
+# in the namespace of its backend Service:
+#
+#  - traefik ns:       *.preview.example.com  → traefik.traefik.svc:80
+#  - argo-events ns:   events.example.com/github/pr     → github-webhook-eventsource-svc:12000
+#                      events.example.com/registry/push → container-registry-eventsource-svc:13000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: preview-wildcard
+  namespace: traefik
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+  annotations:
+    # external-dns-unifi can't publish wildcard CNAMEs (UniFi returns HTTP
+    # 400 Invalid Hostname), and when one record in a batch fails the
+    # webhook short-circuits the entire sync. Tell external-dns to ignore
+    # this Ingress; the cloudflare-tunnel-ingress-controller handles
+    # publication to Cloudflare on its own. UniFi has no business with
+    # *.preview.example.com (it's Cloudflare-fronted; LAN doesn't need it).
+    external-dns.alpha.kubernetes.io/controller: ignore
+spec:
+  ingressClassName: cloudflare-tunnel
+  rules:
+    - host: "*.preview.example.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: traefik
+                port:
+                  number: 80
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: events
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+spec:
+  ingressClassName: cloudflare-tunnel
+  rules:
+    - host: events.example.com
+      http:
+        paths:
+          - path: /github/pr
+            pathType: Prefix
+            backend:
+              service:
+                name: github-webhook-eventsource-svc
+                port:
+                  number: 12000
+          - path: /registry/push
+            pathType: Prefix
+            backend:
+              service:
+                name: container-registry-eventsource-svc
+                port:
+                  number: 13000

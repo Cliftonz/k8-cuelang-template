@@ -1,0 +1,75 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: preview-reaper
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: '*/15 * * * *'
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: preview-reaper
+          containers:
+            - name: reaper
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+
+                  # ---------------------------------------------------------
+                  # Pass 1: Applications stuck mid-deletion (>15 min old
+                  # deletionTimestamp). Force-remove finalizer + delete ns.
+                  # ---------------------------------------------------------
+                  now=$(date -u +%s)
+                  threshold=900   # 15 min
+
+                  for app in $(kubectl get application -n argocd \
+                               -l preview=true \
+                               -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'); do
+                    ts=$(kubectl get application -n argocd "$app" \
+                         -o jsonpath='{.metadata.deletionTimestamp}' 2>/dev/null || true)
+                    [ -z "$ts" ] && continue
+
+                    # ISO8601 → epoch
+                    ts_epoch=$(date -u -d "$ts" +%s 2>/dev/null \
+                              || date -j -f "%Y-%m-%dT%H:%M:%SZ" "$ts" +%s 2>/dev/null \
+                              || echo "0")
+                    age=$(( now - ts_epoch ))
+                    [ "$age" -lt "$threshold" ] && continue
+
+                    target_ns=$(kubectl get application -n argocd "$app" \
+                                -o jsonpath='{.spec.destination.namespace}')
+                    echo "Stuck deleting: argocd/$app (age=${age}s, ns=$target_ns) — force-cleanup"
+
+                    if [ -n "$target_ns" ]; then
+                      kubectl delete namespace "$target_ns" --wait=false 2>&1 || true
+                    fi
+                    kubectl patch application -n argocd "$app" \
+                      --type=merge \
+                      -p '{"metadata":{"finalizers":[]}}' 2>&1 || true
+                  done
+
+                  # ---------------------------------------------------------
+                  # Pass 2: orphaned preview-* namespaces with no Application.
+                  # ---------------------------------------------------------
+                  for ns in $(kubectl get ns -l preview=true \
+                              -o jsonpath='{.items[*].metadata.name}'); do
+                    pr_number=$(kubectl get ns "$ns" -o jsonpath='{.metadata.labels.pr-number}')
+                    slug=$(kubectl get ns "$ns" -o jsonpath='{.metadata.labels.appslug}')
+                    [ -z "$pr_number" ] || [ -z "$slug" ] && continue
+                    app_name="${slug}-${pr_number}"
+                    if ! kubectl get application -n argocd "$app_name" >/dev/null 2>&1; then
+                      echo "Orphaned namespace: $ns (app $app_name missing) — deleting"
+                      kubectl delete namespace "$ns"
+                    fi
+                  done
+          restartPolicy: OnFailure

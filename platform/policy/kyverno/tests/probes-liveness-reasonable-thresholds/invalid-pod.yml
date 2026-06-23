@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probes-thresholds-invalid
+  namespace: kyverno-probes-thresholds
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      ports:
+        - containerPort: 8080
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+        periodSeconds: 1
+        failureThreshold: 1

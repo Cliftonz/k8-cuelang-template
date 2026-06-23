@@ -1,0 +1,59 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: openbao
+  namespace: openbao
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: openbao
+    repository: https://openbao.github.io/openbao-helm
+    version: 0.13.0
+  values:
+    server:
+      dev:
+        enabled: false
+      standalone:
+        enabled: true
+        config: |-
+          ui = true
+
+          listener "tcp" {
+            tls_disable = 1
+            address = "[::]:8200"
+            cluster_address = "[::]:8201"
+          }
+
+          storage "file" {
+            path = "/openbao/data"
+          }
+      dataStorage:
+        enabled: true
+        size: 10Gi
+        storageClass: longhorn
+        accessMode: ReadWriteOnce
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      readinessProbe:
+        enabled: true
+        path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+    ui:
+      enabled: true
+      serviceType: ClusterIP
+      externalPort: 8200
+      annotations:
+        omni-kube-service-exposer.sidero.dev/port: "50081"
+        omni-kube-service-exposer.sidero.dev/label: OpenBao
+        omni-kube-service-exposer.sidero.dev/prefix: openbao
+    injector:
+      enabled: false

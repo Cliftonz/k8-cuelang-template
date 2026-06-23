@@ -1,0 +1,37 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resources
+spec:
+  validationFailureAction: enforce
+  background: true
+  rules:
+  - name: require-resources
+    match:
+      any:
+      - resources:
+          kinds:
+          - Deployment
+          - StatefulSet
+          - DaemonSet
+          - Job
+    exclude:
+        any:
+          - resources:
+              namespaces:
+                - chainsaw-uncommon-coral
+    validate:
+      message: "Each container (including init & sidecar containers) must have memory and CPU requests and limits."
+      pattern:
+        spec:
+          template:
+            spec:
+              containers:
+                - name: "*"
+                  resources:
+                    requests:
+                      memory: "*"
+                      cpu: "*"
+                    limits:
+                      memory: "*"
+                      cpu: "*"

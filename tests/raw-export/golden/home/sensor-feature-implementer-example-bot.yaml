@@ -1,0 +1,94 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-implementer-example-bot
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: implement-labeled
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - labeled
+          - path: body.label.name
+            type: string
+            value:
+              - ready:ai-implement
+          - path: body.issue.number
+            type: number
+            comparator: '>'
+            value:
+              - "0"
+          - path: body.issue.labels.#.name
+            type: string
+            value:
+              - branch-created
+          - path: body.repository.full_name
+            type: string
+            value:
+              - ^example-bot/
+  triggers:
+    - template:
+        name: spawn-implementer
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: kelos.dev/v1alpha1
+              kind: Task
+              metadata:
+                name: PLACEHOLDER_NAME
+                namespace: kelos-system
+                labels:
+                  app.kubernetes.io/managed-by: argo-events
+                  kelos.dev/role: feature-implementer
+                  kelos.dev/owner-scope: example-bot
+              spec:
+                type: claude-code
+                credentials:
+                  type: oauth
+                  secretRef:
+                    name: claude-code-oauth
+                agentConfigRef:
+                  name: feature-implementer
+                workspaceRef:
+                  name: PLACEHOLDER
+                ttlSecondsAfterFinished: 7200
+                podOverrides:
+                  env:
+                    - name: GH_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: github-pat-example-bot
+                          key: GITHUB_TOKEN
+                prompt: (filled by parameters)
+          parameters:
+            - src:
+                dependencyName: implement-labeled
+                dataTemplate: feature-implementer-example-bot-{{ .Input.body.repository.name | lower }}-{{ .Input.body.issue.number }}
+              dest: metadata.name
+            - src:
+                dependencyName: implement-labeled
+                dataTemplate: '{{ .Input.body.repository.name | lower }}'
+              dest: spec.workspaceRef.name
+            - src:
+                dependencyName: implement-labeled
+                dataTemplate: |-
+                  Issue #{{ .Input.body.issue.number }} ({{ .Input.body.issue.title }}) in {{ .Input.body.repository.full_name }} was labeled `implement`.
+
+                  Read the full issue thread. Find the branch name from the `<!-- branch-announce -->` comment. Checkout that branch (NOT a new one). Implement the feature. Detect the package manager from the lockfile (npm/pnpm/bun) per your AgentConfig and run full CI locally. Push. Open draft PR. Mark ready. Apply `pending-review` label.
+
+                  Stop when done.
+              dest: spec.prompt

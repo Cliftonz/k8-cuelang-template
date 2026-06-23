@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "metadata": {"name": "openbao-backend"},
+      "status": {
+        "conditions": [
+          {"type": "Ready", "status": "True", "reason": "Validated",
+           "message": "store validated",
+           "lastTransitionTime": "__NOW_MINUS_1H__"}
+        ]
+      }
+    }
+  ]
+}

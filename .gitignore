@@ -1,0 +1,53 @@
+# CUE
+*.cue.wip
+cue.mod/pkg/
+cue.mod/usr/
+
+# Rendered output is CI-generated but tracked in git for Harness GitOps reconciliation.
+# Do NOT gitignore clusters/ — it is the GitOps reconciliation target.
+
+# Function build artifacts
+*.xpkg
+functions/*/crossplane
+functions/*/manifest.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.*
+
+# Secrets (never commit)
+*.pem
+*.key
+*-secret.yaml
+*-secrets.yaml
+# …but the raw-export golden snapshots are rendered ExternalSecret CRs
+# (no actual secret values — just references to a secret store), so
+# they DO need to be tracked even though their filenames match the
+# glob above. Without this exception, CI diff sees them in the fresh
+# render but not in the committed golden tree.
+!tests/raw-export/golden/**/*-secret.yaml
+!tests/raw-export/golden/**/*-secrets.yaml
+
+# Scratch / temp workspace — SA keys, downloaded creds, ad-hoc test files.
+# Anything dropped in tmp/ stays local.
+tmp/
+scratch.txt
+scratch*.txt
+*.original.md
+
+# rendered output (CI-generated but tracked in git for GitOps reconciliation)
+clusters/
+
+# Make sentinels (jarvy doctor cache, etc.)
+.make/

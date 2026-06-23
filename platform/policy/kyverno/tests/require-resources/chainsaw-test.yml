@@ -1,0 +1,50 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: enforce-workload-standards-valid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../require-resources.yml
+    - try:
+        # Valid deployment (should pass)
+        - apply:
+            file: ./valid-deployment.yml
+            expect:
+              - match:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: valid-app
+                check:
+                  ($error == null): true
+
+---
+
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: enforce-workload-standards-invalid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../require-resources.yml
+    - try:
+        # Invalid deployment (should be rejected)
+        - apply:
+            file: ./invalid-deployment.yml
+            expect:
+              - match:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
+                    name: invalid-app
+                check:
+                  ($error != null): true
+                  (contains($error, 'Each container (including init & sidecar containers)')): true

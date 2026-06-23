@@ -1,0 +1,58 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: argo-workflows
+  namespace: argo-workflows
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: argo-workflows
+    repository: https://argoproj.github.io/argo-helm
+    version: 1.0.16
+  values:
+    crds:
+      install: true
+    workflow:
+      serviceAccount:
+        create: true
+        name: argo-workflow
+      rbac:
+        create: true
+    controller:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      workflowDefaults:
+        spec:
+          serviceAccountName: argo-workflow
+          activeDeadlineSeconds: 3600
+          ttlStrategy:
+            secondsAfterCompletion: 86400
+            secondsAfterSuccess: 86400
+            secondsAfterFailure: 86400
+    server:
+      enabled: true
+      replicas: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+      authModes:
+        - server
+      extraArgs:
+        - --auth-mode=server
+        - --secure=false
+    singleNamespace: false

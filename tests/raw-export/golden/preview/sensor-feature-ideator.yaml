@@ -1,0 +1,103 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-ideator
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  dependencies:
+    - name: feature-comment
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - created
+          - path: body.issue.pull_request
+            type: string
+            comparator: =
+            value:
+              - ""
+          - path: body.issue.labels.#.name
+            type: string
+            comparator: =~
+            value:
+              - ai-feature
+          - path: body.issue.labels.#.name
+            type: string
+            comparator: '!~'
+            value:
+              - ready:ai-implement
+          - path: body.issue.labels.#.name
+            type: string
+            comparator: '!~'
+            value:
+              - awaiting-human
+          - path: body.comment.user.login
+            type: string
+            comparator: '!~'
+            value:
+              - example-org-bot
+          - path: body.repository.full_name
+            type: string
+            comparator: =~
+            value:
+              - ^example-org/
+  triggers:
+    - rateLimit:
+        unit: Minute
+        requestsPerUnit: 1
+      template:
+        name: spawn-ideator
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: kelos.dev/v1alpha1
+              kind: Task
+              metadata:
+                generateName: feature-ideator-
+                namespace: kelos-system
+                labels:
+                  app.kubernetes.io/managed-by: argo-events
+                  kelos.dev/role: feature-ideator
+              spec:
+                type: claude-code
+                credentials:
+                  type: oauth
+                  secretRef:
+                    name: claude-code-oauth
+                agentConfigRef:
+                  name: feature-ideator
+                ttlSecondsAfterFinished: 3600
+                podOverrides:
+                  env:
+                    - name: GITHUB_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: github-pat
+                          key: GITHUB_TOKEN
+                prompt: (filled by parameters)
+          parameters:
+            - src:
+                dependencyName: feature-comment
+                dataTemplate: |-
+                  A new comment was posted on issue #{{ .Input.body.issue.number }} ({{ .Input.body.issue.title }}) in {{ .Input.body.repository.full_name }}.
+
+                  Repo:        {{ .Input.body.repository.full_name }}
+                  Issue:       #{{ .Input.body.issue.number }}
+                  Commenter:   {{ .Input.body.comment.user.login }}
+
+                  Read the FULL issue thread via `gh api repos/{{ .Input.body.repository.full_name }}/issues/{{ .Input.body.issue.number }}/comments --paginate` and the issue body via `gh issue view {{ .Input.body.issue.number }} --repo {{ .Input.body.repository.full_name }}`.
+
+                  Follow your AgentConfig. Post ONE comment (question / proposed scope / ready-for-impl). If blocked on human, post `<!-- needs-human-input -->` and apply `awaiting-human` label.
+
+                  Stop after posting.
+              dest: spec.prompt

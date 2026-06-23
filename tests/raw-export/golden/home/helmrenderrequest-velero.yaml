@@ -1,0 +1,83 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: velero
+  namespace: velero
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: velero
+    repository: https://vmware-tanzu.github.io/helm-charts
+    version: 12.0.3
+  values:
+    upgradeCRDs: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+    deployNodeAgent: true
+    nodeAgent:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 256Mi
+        limits:
+          cpu: "1"
+          memory: 1Gi
+    initContainers:
+      - name: velero-plugin-for-aws
+        image: velero/velero-plugin-for-aws:v1.13.1
+        volumeMounts:
+          - name: plugins
+            mountPath: /target
+    credentials:
+      useSecret: true
+      existingSecret: velero-r2-creds
+    configuration:
+      features: ""
+      volumeSnapshotLocation: []
+      backupStorageLocation:
+        - name: default
+          provider: aws
+          bucket: home-cluster-backup
+          default: true
+          prefix: home-v2
+          config:
+            region: auto
+            s3ForcePathStyle: "true"
+            s3Url: https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com
+      defaultVolumesToFsBackup: true
+    schedules:
+      openbao-hourly:
+        disabled: false
+        schedule: 0 * * * *
+        template:
+          includedNamespaces:
+            - openbao
+          ttl: 720h0m0s
+          snapshotVolumes: true
+      cluster-resources-daily:
+        disabled: false
+        schedule: 0 4 * * *
+        template:
+          excludedNamespaces:
+            - argo-events
+            - kube-public
+            - kube-node-lease
+          excludedResources:
+            - events
+            - events.events.k8s.io
+            - endpoints
+            - endpointslices
+            - replicasets.apps
+          ttl: 720h0m0s
+          snapshotVolumes: false
+          includeClusterResources: true

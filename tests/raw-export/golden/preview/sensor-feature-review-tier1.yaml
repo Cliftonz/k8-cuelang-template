@@ -1,0 +1,118 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-review-tier1
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  dependencies:
+    - name: pr-ready
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - ready_for_review
+              - labeled
+              - synchronize
+          - path: body.pull_request.number
+            type: number
+            comparator: '>'
+            value:
+              - "0"
+          - path: body.pull_request.labels.#.name
+            type: string
+            comparator: =~
+            value:
+              - pending-review
+          - path: body.repository.full_name
+            type: string
+            comparator: =~
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: spawn-review-security
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: kelos.dev/v1alpha1
+              kind: Task
+              metadata:
+                generateName: feature-review-security-
+                namespace: kelos-system
+                labels:
+                  app.kubernetes.io/managed-by: argo-events
+                  kelos.dev/role: feature-review-security
+              spec:
+                type: claude-code
+                credentials:
+                  type: oauth
+                  secretRef:
+                    name: claude-code-oauth
+                agentConfigRef:
+                  name: feature-review-security
+                ttlSecondsAfterFinished: 3600
+                podOverrides:
+                  env:
+                    - name: GITHUB_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: github-pat
+                          key: GITHUB_TOKEN
+                prompt: (filled by parameters)
+          parameters:
+            - src:
+                dependencyName: pr-ready
+                dataTemplate: |-
+                  Review PR #{{ .Input.body.pull_request.number }} on {{ .Input.body.repository.full_name }} at commit {{ .Input.body.pull_request.head.sha }}.
+
+                  Follow your AgentConfig. Post ONE formal PR review via the GitHub Reviews API with marker `<!-- review-security: {verdict} -->`. Use commit_id="{{ .Input.body.pull_request.head.sha }}". Stop after posting.
+              dest: spec.prompt
+    - template:
+        name: spawn-review-architect
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: kelos.dev/v1alpha1
+              kind: Task
+              metadata:
+                generateName: feature-review-architect-
+                namespace: kelos-system
+                labels:
+                  app.kubernetes.io/managed-by: argo-events
+                  kelos.dev/role: feature-review-architect
+              spec:
+                type: claude-code
+                credentials:
+                  type: oauth
+                  secretRef:
+                    name: claude-code-oauth
+                agentConfigRef:
+                  name: feature-review-architect
+                ttlSecondsAfterFinished: 3600
+                podOverrides:
+                  env:
+                    - name: GITHUB_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: github-pat
+                          key: GITHUB_TOKEN
+                prompt: (filled by parameters)
+          parameters:
+            - src:
+                dependencyName: pr-ready
+                dataTemplate: |-
+                  Review PR #{{ .Input.body.pull_request.number }} on {{ .Input.body.repository.full_name }} at commit {{ .Input.body.pull_request.head.sha }}.
+
+                  Follow your AgentConfig. Post ONE formal PR review via the GitHub Reviews API with marker `<!-- review-architect: {verdict} -->`. Use commit_id="{{ .Input.body.pull_request.head.sha }}". Stop after posting.
+              dest: spec.prompt

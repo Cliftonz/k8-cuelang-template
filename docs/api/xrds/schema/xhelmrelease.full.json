@@ -1,0 +1,115 @@
+{
+  "type": "object",
+  "properties": {
+    "apiVersion": {
+      "type": "string",
+      "enum": [
+        "infra.k8/v1alpha1"
+      ]
+    },
+    "kind": {
+      "type": "string",
+      "enum": [
+        "XHelmRelease"
+      ]
+    },
+    "metadata": {
+      "type": "object",
+      "description": "Kubernetes object metadata."
+    },
+    "spec": {
+      "type": "object",
+      "description": "Desired Helm release settings and placement metadata.",
+      "example": {
+        "name": "external-secrets",
+        "namespace": "external-secrets",
+        "chart": {
+          "name": "external-secrets",
+          "repository": "https://charts.external-secrets.io",
+          "version": "0.10.0"
+        },
+        "values": {},
+        "tier": "dev",
+        "cluster": "new-dev",
+        "owner": "platform-team"
+      },
+      "x-docs": {
+        "provider": "provider-helm",
+        "policyRefs": [],
+        "behavior": [
+          "Installs or upgrades the chart in the target namespace.",
+          "Values are passed through to Helm without validation."
+        ],
+        "gotchas": [
+          "The chart repository must be reachable from the cluster.",
+          "Chart version changes will trigger an upgrade."
+        ]
+      },
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Helm release name. Must be DNS-1123 compatible.",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "namespace": {
+          "type": "string",
+          "description": "Namespace where the Helm release will be installed.",
+          "pattern": "^[a-z][a-z0-9-]*$"
+        },
+        "chart": {
+          "type": "object",
+          "description": "Chart reference (name, repo, version).",
+          "properties": {
+            "name": {
+              "type": "string",
+              "description": "Chart name within the repository."
+            },
+            "repository": {
+              "type": "string",
+              "description": "Chart repository URL."
+            },
+            "version": {
+              "type": "string",
+              "description": "Chart version to install."
+            }
+          },
+          "required": [
+            "name",
+            "repository",
+            "version"
+          ]
+        },
+        "values": {
+          "type": "object",
+          "description": "Values map passed to the chart (free-form).",
+          "x-kubernetes-preserve-unknown-fields": true
+        },
+        "tier": {
+          "type": "string",
+          "description": "Tier used for labeling and policy selection.",
+          "enum": [
+            "dev",
+            "staging",
+            "production"
+          ]
+        },
+        "cluster": {
+          "type": "string",
+          "description": "Logical cluster identifier used for labeling and placement."
+        },
+        "owner": {
+          "type": "string",
+          "description": "Owning team or service for accountability and routing."
+        }
+      },
+      "required": [
+        "name",
+        "namespace",
+        "chart",
+        "tier",
+        "cluster",
+        "owner"
+      ]
+    }
+  }
+}

@@ -1,0 +1,34 @@
+# Talos ConfigPatch — configures containerd to KEEP unpacked image layers
+# on disk after pull. Default behavior is to discard them after the
+# image is mounted into a sandbox; Spegel needs the layers around so it
+# can serve them as a peer to other nodes.
+#
+# Apply via Omni:
+#   omnictl apply -f infrastructure/talos/spegel-containerd-patch.yaml
+#
+# IMPORTANT: nodes must REBOOT after this patch — containerd reads the
+# config files only on startup. Talos rolls reboots automatically when
+# applying machine-config changes.
+#
+# Trade-off: keeping unpacked layers costs disk (~2-4× the compressed
+# image size depending on layer reuse). On Longhorn-backed home cluster
+# nodes this is negligible (single-digit GiB across the full image set).
+#
+# Reference:
+#   https://docs.siderolabs.com/kubernetes-guides/advanced-guides/spegel
+metadata:
+  namespace: default
+  type: ConfigPatches.omni.sidero.dev
+  id: 500-spegel-containerd-talos-home
+  labels:
+    omni.sidero.dev/cluster: talos-home
+spec:
+  data: |
+    machine:
+      files:
+        - path: /var/etc/cri/conf.d/20-spegel.part
+          op: create
+          permissions: 0o000
+          content: |
+            [plugins."io.containerd.cri.v1.images"]
+              discard_unpacked_layers = false

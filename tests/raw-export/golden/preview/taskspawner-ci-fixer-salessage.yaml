@@ -1,0 +1,77 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: ci-fixer-salessage
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 1
+  pollInterval: 1m
+  when:
+    githubPullRequests:
+      state: open
+      commentPolicy:
+        triggerComment: /fix-ci
+        minimumPermission: write
+      reporting:
+        enabled: true
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: salessage
+    agentConfigRef:
+      name: ci-fixer-nextjs
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    promptTemplate: |-
+      CI failed on PR #{{.Number}} ({{.Title}}) on branch
+      {{.Branch}}. The PR branch is already checked out.
+
+      Step 1. Read the most recent `/fix-ci` comment:
+        gh pr view {{.Number}} --comments --json comments \
+          --jq '.comments | map(select(.body | startswith("/fix-ci"))) | last.body'
+
+      The body contains ONE OR MORE "Failure N of M" blocks.
+      Each block gives:
+        - Workflow name + path
+        - Job name + URL
+        - Step name + number
+        - The EXACT command that failed (verbatim)
+        - Exit code
+        - Top 3 error-level log lines
+        - Annotations
+        - 200-line log tail
+
+      Step 2. For each Failure block, in order:
+        a. Run the exact command shown under "Command that
+           failed" (e.g. `pnpm typecheck`, `pnpm lint`,
+           `pnpm test -- --run <file>`, `next build`).
+        b. Confirm same exit code + headline error.
+        c. Fix ONLY files named in the block.
+        d. Re-run the command — must pass before proceeding.
+
+      Step 3. Commit:
+        git commit -m "fix(autofix): <one-line>" -m "<body>"
+
+      Step 4. Push to {{.Branch}}. Stop.
+
+      Hard stops (from AgentConfig):
+        - No edits outside the listed scope.
+        - No `@ts-ignore` / `as any` / `eslint-disable` to
+          silence errors. Fix the underlying code.
+        - No adding dependencies.
+        - No disabling tests.
+        - Lockfile drift: run `pnpm install` (no flags) and
+          commit the regenerated `pnpm-lock.yaml`.
+        - If fix would violate scope: post a comment
+          explaining + stop. Do not push.
+        - If command passes without edits (flake): post a
+          comment + stop. No no-op commit.
+    ttlSecondsAfterFinished: 86400

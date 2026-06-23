@@ -1,0 +1,94 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: jarvy-tool-discovery
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: 13 9 * * *
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: jarvy-tool-discovery
+          restartPolicy: Never
+          containers:
+            - name: discovery
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              envFrom:
+                - secretRef:
+                    name: grafana-loki-read-token
+              env:
+                - name: GH_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: github-app-token
+                      key: token
+                - name: MAX_DISPATCH
+                  value: "3"
+                - name: WINDOW_HOURS
+                  value: "48"
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+
+                  # Feature flag — ConfigMap kelos-system/feature-flags
+                  # data.tool-discovery-enabled must equal "true".
+                  # Seed CMD lives in bootstrap-home.sh phase 8.6;
+                  # the flag defaults to "false" so landing this
+                  # CronJob does not immediately start opening PRs.
+                  ENABLED=$(kubectl get configmap feature-flags -n kelos-system \
+                    -o jsonpath='{.data.tool-discovery-enabled}' 2>/dev/null || true)
+                  if [ "$ENABLED" != "true" ]; then
+                    echo "feature-flags.tool-discovery-enabled=$ENABLED (need 'true'); skipping run"
+                    exit 0
+                  fi
+
+                  # Rename Loki creds to the names the script expects.
+                  # envFrom from grafana-loki-read-token gives us:
+                  #   url      → LOKI_URL
+                  #   user_id  → LOKI_USER
+                  #   token    → LOKI_TOKEN
+                  # but the script also accepts the rendered names —
+                  # remapping here keeps the script portable.
+                  export LOKI_URL="${url:?missing url key in grafana-loki-read-token Secret}"
+                  export LOKI_USER="${user_id:?missing user_id key in grafana-loki-read-token Secret}"
+                  export LOKI_TOKEN="${token:?missing token key in grafana-loki-read-token Secret}"
+
+                  apk add --no-cache bash git jq curl >/dev/null
+                  if ! command -v kubectl >/dev/null 2>&1; then
+                    echo "kubectl missing from image — abort"
+                    exit 1
+                  fi
+
+                  # Pull the discovery script from k8-infra HEAD —
+                  # matches the autofix-dispatch pattern. Updating
+                  # the script does not require rebuilding any image.
+                  git clone --depth 1 https://x-access-token:${GH_TOKEN}@github.com/example-org/k8-infra.git /tmp/infra
+                  bash /tmp/infra/ci/scripts/jarvy-tool-discovery.sh
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+                readOnlyRootFilesystem: false

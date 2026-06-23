@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: env-repos
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - name: new-dev
+            repoURL: https://github.com/example-org/k8-infra-env-new-dev.git
+            targetRevision: main
+            path: .
+  template:
+    metadata:
+      name: env-{{name}}
+    spec:
+      project: default
+      source:
+        repoURL: "{{repoURL}}"
+        targetRevision: "{{targetRevision}}"
+        path: "{{path}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: argocd
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

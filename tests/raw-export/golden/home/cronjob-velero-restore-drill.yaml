@@ -1,0 +1,93 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: velero-restore-drill
+  namespace: velero
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: 0 5 * * 0
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: velero-restore-drill
+          restartPolicy: Never
+          containers:
+            - name: drill
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/bash
+                - -c
+                - |-
+                  set -eu
+                  TS=$(date -u +%Y%m%dt%H%M%Sz)
+                  RESTORE_NS="velero-restore-test"
+                  RESTORE_NAME="drill-$TS"
+
+                  echo "[drill] picking latest openbao backup (Completed or PartiallyFailed)..."
+                  pick_latest() {
+                    kubectl -n velero get backups.velero.io "$@" \
+                      -o jsonpath='{range .items[*]}{.metadata.name},{.status.phase},{.status.completionTimestamp}{"\n"}{end}' \
+                    | grep -E ',(Completed|PartiallyFailed),' \
+                    | sort -t, -k3 \
+                    | tail -1 \
+                    | cut -d, -f1
+                  }
+                  BACKUP=$(pick_latest -l velero.io/schedule-name=velero-openbao-hourly)
+                  [ -z "$BACKUP" ] && BACKUP=$(pick_latest)
+                  [ -z "$BACKUP" ] && { echo "[drill] FAIL: no usable backup found"; exit 1; }
+                  echo "[drill] using backup: $BACKUP"
+
+                  echo "[drill] cleanup any previous test ns..."
+                  kubectl delete ns "$RESTORE_NS" --ignore-not-found --wait=true --timeout=2m || true
+
+                  echo "[drill] creating Restore CR $RESTORE_NAME..."
+                  cat <<EOF | kubectl apply -f -
+                  apiVersion: velero.io/v1
+                  kind: Restore
+                  metadata:
+                    name: $RESTORE_NAME
+                    namespace: velero
+                  spec:
+                    backupName: $BACKUP
+                    includedNamespaces: ["openbao"]
+                    namespaceMapping:
+                      openbao: $RESTORE_NS
+                    restorePVs: true
+                  EOF
+
+                  echo "[drill] waiting for restore to finish..."
+                  for i in $(seq 1 60); do
+                    PHASE=$(kubectl -n velero get restore.velero.io "$RESTORE_NAME" -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+                    echo "  phase: $PHASE"
+                    case "$PHASE" in
+                      Completed|PartiallyFailed) break ;;
+                      Failed|FailedValidation) echo "[drill] FAIL: $PHASE"; exit 1 ;;
+                    esac
+                    sleep 10
+                  done
+                  [ "$PHASE" != "Completed" ] && [ "$PHASE" != "PartiallyFailed" ] && { echo "[drill] FAIL: timeout"; exit 1; }
+
+                  echo "[drill] verifying restored Secret openbao-keys exists..."
+                  kubectl -n "$RESTORE_NS" get secret openbao-keys >/dev/null
+                  echo "[drill] PASS"
+
+                  echo "[drill] cleanup..."
+                  kubectl delete ns "$RESTORE_NS" --ignore-not-found --wait=false || true
+                  kubectl -n velero delete restore.velero.io "$RESTORE_NAME" --ignore-not-found || true
+              resources:
+                requests:
+                  cpu: 50m
+                  memory: 128Mi
+                limits:
+                  cpu: 500m
+                  memory: 512Mi

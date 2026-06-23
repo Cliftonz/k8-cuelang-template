@@ -1,0 +1,144 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: claude-oauth-refresher
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: '*/30 * * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      backoffLimit: 0
+      template:
+        spec:
+          serviceAccountName: claude-oauth-refresher
+          restartPolicy: Never
+          containers:
+            - name: refresher
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+                  apk add --no-cache jq curl >/dev/null
+
+                  # Read current OAuth state from the ESO-synced Secret.
+                  ACCESS=$(  cat /run/oauth/CLAUDE_CODE_OAUTH_TOKEN)
+                  REFRESH=$( cat /run/oauth/REFRESH_TOKEN)
+                  EXPIRES=$( cat /run/oauth/EXPIRES_AT_MS)
+                  CLIENT_ID=$(cat /run/oauth/CLIENT_ID)
+                  TOKEN_URL=$(cat /run/oauth/TOKEN_URL)
+
+                  NOW_MS=$(($(date +%s) * 1000))
+                  REMAINING_MS=$((EXPIRES - NOW_MS))
+                  NINETY_MIN_MS=$((90 * 60 * 1000))
+                  REMAINING_HUMAN=$((REMAINING_MS / 60000))
+
+                  echo "access token expires in ${REMAINING_HUMAN} min"
+
+                  if [ "$REMAINING_MS" -gt "$NINETY_MIN_MS" ]; then
+                  	echo "still > 90 min of life — skip refresh"
+                  	exit 0
+                  fi
+
+                  echo "refreshing via $TOKEN_URL ..."
+                  HTTP_CODE=$(curl -sS -o /tmp/resp.json -w "%{http_code}" \
+                  	-X POST "$TOKEN_URL" \
+                  	-H "Content-Type: application/json" \
+                  	-H "Accept: application/json" \
+                  	-d "$(jq -n --arg rt "$REFRESH" --arg cid "$CLIENT_ID" \
+                  		'{grant_type:"refresh_token", refresh_token:$rt, client_id:$cid}')") || {
+                  	echo "curl failed network-level. Leaving tokens; next cron tick retries." >&2
+                  	exit 1
+                  }
+                  RESP=$(cat /tmp/resp.json)
+
+                  if [ "$HTTP_CODE" != "200" ]; then
+                  	ERR_TYPE=$(  echo "$RESP" | jq -r '.error.type    // .error // "unknown"')
+                  	ERR_MSG=$(   echo "$RESP" | jq -r '.error.message // .error_description // .')
+                  	echo "refresh HTTP $HTTP_CODE: $ERR_TYPE — $ERR_MSG" >&2
+                  	case "$HTTP_CODE" in
+                  		429) echo "rate limited. Existing token still valid for $REMAINING_HUMAN min — next cron tick handles retry." >&2 ;;
+                  		400|401) echo "refresh token rejected. Likely expired or rotated by another client. Re-run ci/scripts/refresh-claude-oauth.sh from a logged-in laptop." >&2 ;;
+                  	esac
+                  	exit 1
+                  fi
+
+                  NEW_ACCESS=$( echo "$RESP" | jq -r '.access_token  // empty')
+                  NEW_REFRESH=$(echo "$RESP" | jq -r '.refresh_token // empty')
+                  EXPIRES_IN=$( echo "$RESP" | jq -r '.expires_in    // 28800')
+
+                  if [ -z "$NEW_ACCESS" ]; then
+                  	echo "200 OK but no access_token in body: $RESP" >&2
+                  	exit 1
+                  fi
+                  [ -z "$NEW_REFRESH" ] && NEW_REFRESH="$REFRESH"
+
+                  NEW_EXPIRES_MS=$(( ($(date +%s) + EXPIRES_IN) * 1000 ))
+                  echo "new token minted, expires_at=$NEW_EXPIRES_MS"
+
+                  # Write rotated bundle back to OpenBao. ESO will pick it
+                  # up on the next sync (5min) and patch the cluster Secret.
+                  # We force-sync via annotation below so agents see the
+                  # change within seconds, not minutes.
+                  export BAO_ADDR="http://openbao.openbao.svc:8200"
+                  BAO_TOKEN=$(kubectl get secret openbao-keys -n openbao \
+                  	-o jsonpath='{.data.root-token}' | base64 -d)
+                  export BAO_TOKEN
+
+                  # bao CLI not in alpine/k8s; use the HTTP API.
+                  curl -sfS -X POST -H "X-Vault-Token: $BAO_TOKEN" \
+                  	-H "Content-Type: application/json" \
+                  	-d "$(jq -n \
+                  		--arg at "$NEW_ACCESS" \
+                  		--arg rt "$NEW_REFRESH" \
+                  		--arg ex "$NEW_EXPIRES_MS" \
+                  		--arg ci "$CLIENT_ID" \
+                  		--arg tu "$TOKEN_URL" \
+                  		'{data: {
+                  			CLAUDE_CODE_OAUTH_TOKEN: $at,
+                  			REFRESH_TOKEN:           $rt,
+                  			EXPIRES_AT_MS:           $ex,
+                  			CLIENT_ID:               $ci,
+                  			TOKEN_URL:               $tu
+                  		}}')" \
+                  	"$BAO_ADDR/v1/secret/data/preview/claude-oauth-credentials" >/dev/null
+                  echo "OpenBao updated"
+
+                  # Force ESO to re-read OpenBao now (don't wait the 5min poll).
+                  NS=$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)
+                  kubectl annotate externalsecret claude-code-oauth -n "$NS" \
+                  	"force-sync=$(date +%s)" --overwrite >/dev/null
+                  echo "ESO force-sync annotated; agents will see new token on next pod start"
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: oauth
+                  mountPath: /run/oauth
+                  readOnly: true
+              securityContext:
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+          volumes:
+            - name: oauth
+              secret:
+                secretName: claude-code-oauth

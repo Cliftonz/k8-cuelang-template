@@ -1,0 +1,37 @@
+# Talos machine-config patch — enables kubelet server-side certificate
+# rotation. Required for metrics-server to validate kubelet TLS certs
+# without --kubelet-insecure-tls. Paired with kubelet-serving-cert-approver
+# (see infrastructure/metrics-server/install.sh).
+#
+# Apply via omnictl (the in-use path for talos-home, 2026-05-15):
+#   1. Wrap this file in an Omni ConfigPatch resource:
+#      cat > /tmp/patch.yaml <<'YAML'
+#      metadata:
+#          namespace: default
+#          type: ConfigPatches.omni.sidero.dev
+#          id: 200-kubelet-cert-rotation-talos-home
+#          labels:
+#              omni.sidero.dev/cluster: talos-home
+#      spec:
+#          data: |
+#              <paste contents of THIS file's machine: block here>
+#      YAML
+#   2. omnictl apply -f /tmp/patch.yaml
+#   3. Talos restarts kubelet IN-PLACE (no node reboot). New CSRs are
+#      auto-approved by kubelet-serving-cert-approver in ~30s per node.
+#      Total cluster impact: ~0 — kubelets blip for <5s each, pods stay up.
+#
+# History: this patch was authored 2026-05-06 during the Cilium migration
+# but not actually applied to the cluster until 2026-05-15 (Omni ConfigPatch
+# `200-kubelet-cert-rotation-talos-home`). Before then, metrics-server
+# couldn't validate kubelet TLS, the metrics.k8s.io APIService stayed
+# Unavailable, and any namespace stuck in Terminating with content-removed
+# would hang indefinitely (the namespace controller's discovery loop fails
+# on the unavailable APIService).
+#
+# Reference:
+#   https://docs.siderolabs.com/kubernetes-guides/monitoring-and-observability/deploy-metrics-server
+machine:
+  kubelet:
+    extraArgs:
+      rotate-server-certificates: "true"

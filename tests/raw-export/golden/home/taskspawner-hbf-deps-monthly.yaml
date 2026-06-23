@@ -1,0 +1,44 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: hbf-deps-monthly
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 1
+  when:
+    cron:
+      schedule: 0 8 8 * *
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: hbf
+    agentConfigRef:
+      name: hbf-maintainer
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    promptTemplate: |-
+      Monthly dependency-maintenance run for example-bot/hbf
+      (Honey Bear Financials, Next.js + Bun + TypeScript).
+
+      SCOPE = deps
+      Cron tick at {{.Time}} (schedule: {{.Schedule}}).
+
+      Follow your AgentConfig instructions exactly. Update
+      patch + minor deps + anything needed to clear an
+      audit advisory. Run typecheck + lint + unit-test
+      (skip Playwright e2e — no browsers in the pod). Bump
+      patch version. Open ONE PR titled
+      `chore(deps): monthly bump` and enable auto-merge.
+      Stop after that.
+
+      If `bun outdated` shows nothing actionable and audit
+      is clean, stop without opening a PR.
+    ttlSecondsAfterFinished: 86400

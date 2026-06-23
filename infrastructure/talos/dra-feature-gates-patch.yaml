@@ -1,0 +1,48 @@
+# Talos ConfigPatch — enables Dynamic Resource Allocation (DRA) feature gate
+# on every k8s control-plane + node component. DRA is the K8s-native API for
+# scheduling pods onto specialized hardware (GPUs, FPGAs, NICs) using
+# ResourceClaim / ResourceClaimTemplate / DeviceClass primitives instead of
+# the legacy `extended resources` mechanism.
+#
+# Apply via Omni:
+#   omnictl apply -f infrastructure/talos/dra-feature-gates-patch.yaml \
+#     --label omni.sidero.dev/cluster=<cluster-name>
+#
+# Apply via talosctl (non-Omni):
+#   talosctl patch mc --patch @infrastructure/talos/dra-feature-gates-patch.yaml
+#
+# Notes:
+#   - K8s 1.32: DRA is alpha → feature gate REQUIRED.
+#   - K8s 1.33: DRA is beta off-by-default → feature gate REQUIRED.
+#   - K8s 1.34+: DRA is beta default-on → feature gate redundant but harmless.
+#   - K8s 1.35+: DRA targeted GA → feature gate ignored.
+#
+# Hardware: the home cluster has no GPU today; this patch lights up the
+# scheduler-side capability so a future GPU-equipped node + the
+# `nvidia-dra-driver-gpu` Helm release just work. Without the patch the
+# scheduler silently ignores ResourceClaim references.
+#
+# Reference:
+#   https://docs.siderolabs.com/kubernetes-guides/advanced-guides/dynamic-resource-allocation
+apiVersion: omni.sidero.dev/v1alpha1
+kind: ConfigPatch
+metadata:
+  name: dra-feature-gates
+  labels:
+    omni.sidero.dev/cluster: ""  # set on apply: --label omni.sidero.dev/cluster=<name>
+spec:
+  data: |
+    machine:
+      kubelet:
+        extraArgs:
+          feature-gates: DynamicResourceAllocation=true
+    cluster:
+      apiServer:
+        extraArgs:
+          feature-gates: DynamicResourceAllocation=true
+      controllerManager:
+        extraArgs:
+          feature-gates: DynamicResourceAllocation=true
+      scheduler:
+        extraArgs:
+          feature-gates: DynamicResourceAllocation=true

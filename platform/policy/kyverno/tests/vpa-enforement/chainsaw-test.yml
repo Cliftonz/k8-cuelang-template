@@ -1,0 +1,81 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: audit-enforce-vpa-on-workloads
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    # 1️⃣ Apply the policy
+    - try:
+        - apply:
+            file: ../../vpa-audit.yml
+
+    # 2️⃣ Apply a Deployment *without* a VPA — should be allowed, but show up in a PolicyReport
+    - try:
+        - apply:
+            file: audit-deployment.yml
+
+    - try:
+        - wait:
+            apiVersion: wgpolicyk8s.io/v1alpha2
+            kind: PolicyReport
+            namespace: default
+            selector: "policy=enforce-vpa-on-workloads"
+            timeout: 2m
+            for:
+              jsonPath:
+                path: "{.results[*].result}"
+                value: "fail"
+
+    - try:
+        - assert:
+            resource:
+              apiVersion: wgpolicyk8s.io/v1alpha2
+              kind: PolicyReport
+              namespace: default
+              # No need to specify exact name; any matching report is fine
+              results:
+                - policy: enforce-vpa-on-workloads
+                  rule: require-vpa-for-deployments
+                  result: fail
+
+    # 3️⃣ Create a VPA for that Deployment — PolicyReport should now pass
+    - try:
+        - apply:
+            resource:
+              apiVersion: autoscaling.k8s.io/v1
+              kind: VerticalPodAutoscaler
+              metadata:
+                name: audit-test-deploy-vpa
+                namespace: default
+              spec:
+                targetRef:
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  name: audit-test-deploy
+                updatePolicy:
+                  updateMode: Off
+
+    - try:
+        - wait:
+            apiVersion: wgpolicyk8s.io/v1alpha2
+            kind: PolicyReport
+            namespace: default
+            name: '*'
+            timeout: 2m
+            for:
+              jsonPath:
+                path: "{.results[?(@.policy=='enforce-vpa-on-workloads' && @.rule=='require-vpa-for-deployments')].result}"
+                value: "pass"
+
+    - try:
+        - assert:
+            resource:
+              apiVersion: wgpolicyk8s.io/v1alpha2
+              kind: PolicyReport
+              namespace: default
+              results:
+                - policy: enforce-vpa-on-workloads
+                  rule: require-vpa-for-deployments
+                  result: pass

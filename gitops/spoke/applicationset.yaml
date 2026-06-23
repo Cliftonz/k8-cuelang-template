@@ -1,0 +1,29 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: platform-artifacts
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - name: platform
+            repoURL: https://github.com/example-org/k8-infra.git
+            targetRevision: main
+            path: clusters
+  template:
+    metadata:
+      name: platform-{{name}}
+    spec:
+      project: default
+      source:
+        repoURL: "{{repoURL}}"
+        targetRevision: "{{targetRevision}}"
+        path: "{{path}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: argocd
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true

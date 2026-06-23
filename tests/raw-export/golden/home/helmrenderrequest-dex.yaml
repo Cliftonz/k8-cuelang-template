@@ -1,0 +1,136 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: dex
+  namespace: dex
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: dex
+    repository: https://charts.dexidp.io
+    version: 0.21.0
+  values:
+    replicaCount: 1
+    image:
+      tag: v2.42.0
+    deploymentAnnotations:
+      reloader.stakater.com/auto: "true"
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 1001
+      runAsGroup: 1001
+      fsGroup: 1001
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      runAsNonRoot: true
+      readOnlyRootFilesystem: true
+    volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: google-sa
+        secret:
+          secretName: dex-google
+          items:
+            - key: service_account_json
+              path: google.json
+    volumeMounts:
+      - name: tmp
+        mountPath: /tmp
+      - name: google-sa
+        mountPath: /etc/dex/google
+        readOnly: true
+    envVars:
+      - name: GOOGLE_CLIENT_ID
+        valueFrom:
+          secretKeyRef:
+            name: dex-google
+            key: client_id
+      - name: GOOGLE_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: dex-google
+            key: client_secret
+      - name: GOOGLE_ADMIN_EMAIL
+        valueFrom:
+          secretKeyRef:
+            name: dex-google
+            key: admin_email
+      - name: ARGOCD_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: dex-static-clients
+            key: argocd
+      - name: OPENBAO_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: dex-static-clients
+            key: openbao
+      - name: OAUTH2_PROXY_CLIENT_SECRET
+        valueFrom:
+          secretKeyRef:
+            name: dex-static-clients
+            key: oauth2proxy
+    config:
+      issuer: https://dex.example.com
+      storage:
+        type: kubernetes
+        config:
+          inCluster: true
+      oauth2:
+        skipApprovalScreen: true
+      web:
+        http: "0.0.0.0:5556"
+      connectors:
+        - type: google
+          id: google
+          name: Google
+          config:
+            clientID: ${GOOGLE_CLIENT_ID}
+            clientSecret: ${GOOGLE_CLIENT_SECRET}
+            redirectURI: https://dex.example.com/callback
+            hostedDomains:
+              - example.com
+            serviceAccountFilePath: /etc/dex/google/google.json
+            adminEmail: ${GOOGLE_ADMIN_EMAIL}
+      staticClients:
+        - id: argocd
+          name: Argo CD
+          redirectURIs:
+            - https://argocd.example.internal/auth/callback
+          secretEnv: ARGOCD_CLIENT_SECRET
+        - id: openbao
+          name: OpenBao
+          redirectURIs:
+            - https://openbao.example.internal/ui/vault/auth/oidc/oidc/callback
+            - https://openbao.example.internal/v1/auth/oidc/oidc/callback
+            - http://localhost:8250/oidc/callback
+          secretEnv: OPENBAO_CLIENT_SECRET
+        - id: oauth2-proxy
+          name: oauth2-proxy
+          redirectURIs:
+            - https://oauth.example.internal/oauth2/callback
+          secretEnv: OAUTH2_PROXY_CLIENT_SECRET
+    service:
+      type: ClusterIP
+      ports:
+        http:
+          containerPort: 5556
+          port: 5556
+          protocol: TCP
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi

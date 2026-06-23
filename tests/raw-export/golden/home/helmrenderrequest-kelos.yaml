@@ -1,0 +1,42 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: kelos
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: kelos
+    repository: oci://ghcr.io/kelos-dev/charts
+    version: 0.36.0
+  values:
+    crds:
+      install: true
+      keep: true
+    telemetry:
+      enabled: false
+    webhookServer:
+      sources:
+        github:
+          enabled: false
+    controller:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+    spawner:
+      resources:
+        requests: cpu=20m,memory=64Mi
+        limits: cpu=200m,memory=128Mi
+    ghproxy:
+      resources:
+        requests: cpu=20m,memory=64Mi
+        limits: cpu=200m,memory=256Mi

@@ -1,0 +1,84 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kelos-oauth-watchdog
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  schedule: 0 */6 * * *
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: kelos-oauth-watchdog
+          restartPolicy: Never
+          containers:
+            - name: watchdog
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+                  WEBHOOK="$(cat /run/discord/url)"
+                  [ -z "$WEBHOOK" ] && { echo "no webhook"; exit 0; }
+
+                  # 1. OAuth expiry check
+                  EXPIRES=$(kubectl get secret claude-code-oauth -n kelos-system \
+                  	-o jsonpath='{.metadata.annotations.kelos\.dev/oauth-expires-at}' 2>/dev/null || true)
+                  if [ -n "${EXPIRES:-}" ]; then
+                  	NOW=$(($(date +%s) * 1000))
+                  	REMAINING=$((EXPIRES - NOW))
+                  	FIVE_DAYS_MS=$((5 * 86400 * 1000))
+                  	if [ "$REMAINING" -le 0 ]; then
+                  		curl -sf -X POST -H 'Content-Type: application/json' \
+                  			-d '{"content":":rotating_light: Claude OAuth EXPIRED. Kelos Tasks will fail. Run the re-seed flow now. See docs/secret-management.md."}' \
+                  			"$WEBHOOK"
+                  	elif [ "$REMAINING" -lt "$FIVE_DAYS_MS" ]; then
+                  		DAYS=$((REMAINING / 86400000))
+                  		curl -sf -X POST -H 'Content-Type: application/json' \
+                  			-d "{\"content\":\":warning: Claude OAuth expires in ${DAYS} days. Re-seed before then.\"}" \
+                  			"$WEBHOOK"
+                  	fi
+                  fi
+
+                  # 2. Recent auth-failure check on Tasks
+                  FAILED=$(kubectl get task -n kelos-system -o json 2>/dev/null | \
+                  	jq -r '.items[] | select(.status.phase=="Failed") |
+                  	       select((.status.message // "") | test("401|Unauthorized|invalid_token|auth"; "i")) |
+                  	       .metadata.name' | head -3)
+                  if [ -n "${FAILED:-}" ]; then
+                  	BODY=$(printf '{"content":":x: Kelos Task auth failures:\\n```\\n%s\\n```\\nLikely OAuth expired."}' "$FAILED")
+                  	curl -sf -X POST -H 'Content-Type: application/json' -d "$BODY" "$WEBHOOK"
+                  fi
+              volumeMounts:
+                - name: discord
+                  mountPath: /run/discord
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+          volumes:
+            - name: discord
+              secret:
+                secretName: discord-webhook

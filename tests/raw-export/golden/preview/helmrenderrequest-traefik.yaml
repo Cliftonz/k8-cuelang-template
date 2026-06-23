@@ -1,0 +1,86 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: traefik
+    repository: https://traefik.github.io/charts
+    version: 33.2.1
+  values:
+    deployment:
+      replicas: 1
+    service:
+      type: LoadBalancer
+    api:
+      dashboard: true
+      insecure: true
+    ingressRoute:
+      dashboard:
+        enabled: true
+    ports:
+      traefik:
+        expose:
+          default: true
+      web:
+        forwardedHeaders:
+          trustedIPs:
+            - 173.245.48.0/20
+            - 103.21.244.0/22
+            - 103.22.200.0/22
+            - 103.31.4.0/22
+            - 141.101.64.0/18
+            - 108.162.192.0/18
+            - 190.93.240.0/20
+            - 188.114.96.0/20
+            - 197.234.240.0/22
+            - 198.41.128.0/17
+            - 162.158.0.0/15
+            - 104.16.0.0/13
+            - 104.24.0.0/14
+            - 172.64.0.0/13
+            - 131.0.72.0/22
+    extraObjects:
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: traefik-dashboard
+          namespace: traefik
+          annotations:
+            omni-kube-service-exposer.sidero.dev/port: "50083"
+            omni-kube-service-exposer.sidero.dev/label: Traefik
+            omni-kube-service-exposer.sidero.dev/prefix: traefik
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          type: ClusterIP
+          selector:
+            app.kubernetes.io/instance: traefik-traefik
+            app.kubernetes.io/name: traefik
+          ports:
+            - name: traefik
+              port: 8080
+              targetPort: 8080
+              protocol: TCP
+    ingressClass:
+      enabled: true
+      isDefaultClass: true
+    providers:
+      kubernetesIngress:
+        allowExternalNameServices: false
+        allowEmptyServices: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi

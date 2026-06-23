@@ -1,0 +1,32 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    traefik.ingress.kubernetes.io/router.middlewares: homepage-html-cache@kubernetescrd
+  name: homepage
+  namespace: homepage
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: home.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: homepage
+                port:
+                  number: 3000
+  tls:
+    - secretName: homepage-tls
+      hosts:
+        - home.example.internal

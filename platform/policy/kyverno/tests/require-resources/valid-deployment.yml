@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: valid-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: valid
+  template:
+    metadata:
+      labels:
+        app: valid
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/app: "true"
+      containers:
+        - name: app
+          image: nginx
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "100m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"

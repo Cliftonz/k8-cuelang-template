@@ -1,0 +1,29 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: descheduler
+  namespace: descheduler
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: descheduler
+    repository: https://kubernetes-sigs.github.io/descheduler/
+    version: 0.36.0
+  values:
+    kind: Deployment
+    deschedulingInterval: 5m
+    replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+    leaderElection:
+      enabled: true

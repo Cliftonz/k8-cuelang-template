@@ -1,0 +1,19 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: k8s-version-latest-minus-3
+spec:
+  steps:
+    - try:
+        - script:
+            content: |
+              #!/bin/sh
+              server_minor=$(kubectl version -o json | jq -r '.serverVersion.minor' | tr -d '+')
+              latest_minor=24
+              delta=$(( latest_minor - server_minor ))
+              echo "Checked server_minor=$server_minor, delta=$delta"
+              if [ "$server_minor" -ge "$latest_minor" ] || { [ "$delta" -ge 0 ] && [ "$delta" -le 3 ]; }; then
+                exit 0
+              else
+                exit 1
+              fi

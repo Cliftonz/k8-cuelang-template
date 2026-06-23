@@ -1,0 +1,114 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: github-app-token-refresh
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: '*/30 * * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: github-app-token-refresh
+          restartPolicy: OnFailure
+          containers:
+            - name: refresh
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              env:
+                - name: TOKEN_SECRET_NAME
+                  value: github-app-token
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+
+                  # alpine/k8s ships kubectl + curl but lacks openssl/jq.
+                  apk add --no-cache openssl jq >/dev/null
+
+                  # Read App credentials from the ESO-synced secret.
+                  APP_ID=$(cat /run/github-app/APP_ID)
+                  INSTALLATION_ID=$(cat /run/github-app/INSTALLATION_ID)
+                  cp /run/github-app/PRIVATE_KEY /tmp/key.pem
+                  chmod 0600 /tmp/key.pem
+
+                  # base64url helper: standard base64 with +/= → -_ and stripped padding.
+                  b64url() { openssl base64 -e -A | tr '+/' '-_' | tr -d '='; }
+
+                  NOW=$(date +%s)
+                  EXP=$((NOW + 540))   # 9 min, under GitHub's 10-min ceiling
+                  HEADER=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
+                  PAYLOAD=$(printf '{"iat":%d,"exp":%d,"iss":%s}' "$NOW" "$EXP" "$APP_ID" | b64url)
+                  SIG=$(printf '%s' "$HEADER.$PAYLOAD" | openssl dgst -sha256 -sign /tmp/key.pem | b64url)
+                  JWT="$HEADER.$PAYLOAD.$SIG"
+                  rm -f /tmp/key.pem
+
+                  # Exchange JWT for installation access token (valid 1h).
+                  RESP=$(curl -sfS -X POST \
+                  	-H "Authorization: Bearer $JWT" \
+                  	-H "Accept: application/vnd.github+json" \
+                  	"https://api.github.com/app/installations/$INSTALLATION_ID/access_tokens")
+                  TOKEN=$(echo "$RESP" | jq -r '.token')
+                  EXPIRES=$(echo "$RESP" | jq -r '.expires_at')
+                  if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
+                  	echo "token fetch failed: $RESP" >&2
+                  	exit 1
+                  fi
+                  echo "minted token, expires_at=$EXPIRES"
+
+                  # Upsert Secret/$TOKEN_SECRET_NAME with three keys:
+                  #   - token (kept for backward compat with existing
+                  #     consumers that referenced .data.token)
+                  #   - expires_at
+                  #   - GITHUB_TOKEN (NEW — same value as token, named
+                  #     this way so the Kelos Workspace's auto-env
+                  #     injection picks it up. Kelos reads
+                  #     {GITHUB_TOKEN,GH_TOKEN} from the workspace
+                  #     Secret using the key literally named
+                  #     `GITHUB_TOKEN`; without this key the auto-inject
+                  #     was using whatever other Secret the Workspace
+                  #     pointed at, defeating per-Task secretRef
+                  #     overrides for GH_TOKEN.)
+                  # Name is templated per for-loop entry so the example-org
+                  # and example-bot installations don't clobber each other
+                  # in the same namespace.
+                  kubectl create secret generic "$TOKEN_SECRET_NAME" \
+                  	--namespace="$(cat /var/run/secrets/kubernetes.io/serviceaccount/namespace)" \
+                  	--from-literal=token="$TOKEN" \
+                  	--from-literal=GITHUB_TOKEN="$TOKEN" \
+                  	--from-literal=expires_at="$EXPIRES" \
+                  	--dry-run=client -o yaml \
+                  	| kubectl apply -f -
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: app-creds
+                  mountPath: /run/github-app
+                  readOnly: true
+              securityContext:
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+                readOnlyRootFilesystem: false
+          volumes:
+            - name: app-creds
+              secret:
+                secretName: github-app-creds

@@ -1,0 +1,51 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: tandoor-mcp-api-monthly
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 1
+  when:
+    cron:
+      schedule: 0 8 15 * *
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: tandoor-recipe-mcp
+    agentConfigRef:
+      name: tandoor-mcp-maintainer
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    promptTemplate: |-
+      Monthly upstream-API tracking run for
+      example-bot/tandoor-recipe-mcp.
+
+      SCOPE = api
+      Cron tick at {{.Time}} (schedule: {{.Schedule}}).
+
+      Follow your AgentConfig instructions exactly. Compare
+      the locally-tracked Tandoor Recipes API spec against
+      the upstream source the repo points at. If endpoints,
+      fields, or types have drifted, patch only the typed
+      client / handler files for the affected resource. Run
+      `npm test`. Bump patch version. Open ONE PR titled
+      `chore(api): monthly bump` and enable auto-merge if
+      prerequisites hold (see step 10 in your AgentConfig).
+      Stop after that.
+
+      If the upstream source is ambiguous, open a PR
+      (or comment, if no edits) explaining what you found
+      and stop — do NOT enable auto-merge in this case;
+      leave it for human review.
+
+      If the spec is unchanged from the local copy, stop
+      without opening a PR.
+    ttlSecondsAfterFinished: 86400

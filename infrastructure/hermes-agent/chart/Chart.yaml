@@ -1,0 +1,21 @@
+apiVersion: v2
+name: hermes-agent
+description: Cloud-native Helm chart for Nous Research's Hermes Agent
+type: application
+version: 0.1.0
+appVersion: "0.8.0"
+kubeVersion: ">=1.25.0-0"
+keywords:
+  - hermes
+  - ai
+  - agent
+  - llm
+  - gateway
+  - acp
+  - mcp
+home: https://hermes-agent.nousresearch.com
+icon: https://raw.githubusercontent.com/NousResearch/hermes-agent/main/landingpage/icon-192.png
+sources:
+  - https://github.com/nousresearch/hermes-agent
+maintainers:
+  - name: hermes-agent-community

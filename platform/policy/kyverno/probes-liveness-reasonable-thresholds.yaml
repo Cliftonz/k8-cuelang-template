@@ -1,0 +1,47 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: probes-liveness-reasonable-thresholds
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+spec:
+  validationFailureAction: Audit
+  validationFailureActionOverrides:
+    - action: Enforce
+      namespaceSelector:
+        matchExpressions:
+          - key: infra.k8/tier
+            operator: In
+            values:
+              - staging
+              - production
+  background: true
+  rules:
+    - name: require-min-liveness-thresholds
+      match:
+        resources:
+          kinds:
+            - Pod
+      exclude:
+        resources:
+          namespaces:
+            - kube-system
+            - kyverno
+      validate:
+        message: "Liveness probes must allow at least 5s between checks and 3 failures before restart."
+        foreach:
+          - list: "request.object.spec.containers"
+            preconditions:
+              all:
+                - key: "{{ element.livenessProbe }}"
+                  operator: NotEquals
+                  value: null
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.livenessProbe.periodSeconds || 10 }}"
+                    operator: LessThan
+                    value: 5
+                  - key: "{{ element.livenessProbe.failureThreshold || 3 }}"
+                    operator: LessThan
+                    value: 3

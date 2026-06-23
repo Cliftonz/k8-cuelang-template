@@ -1,0 +1,37 @@
+fullnameOverride: hermes-default-service-ports
+
+apiServer:
+  enabled: true
+  port: 8642
+
+webhook:
+  enabled: true
+  port: 8644
+
+telegramWebhook:
+  enabled: true
+  url: https://hermes.example.test/telegram
+  port: 8443
+
+secrets:
+  API_SERVER_KEY: api-test-key
+  TELEGRAM_BOT_TOKEN: bot-test
+
+service:
+  enabled: true
+
+ingress:
+  enabled: true
+  className: nginx
+  hosts:
+    - host: hermes.example.test
+      paths:
+        - path: /
+          pathType: Prefix
+
+virtualService:
+  enabled: true
+  gateways:
+    - mesh
+  hosts:
+    - hermes.example.test

@@ -1,0 +1,43 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: pdb-avoid-blocking-disruptions
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+spec:
+  validationFailureAction: Audit
+  validationFailureActionOverrides:
+    - action: Enforce
+      namespaceSelector:
+        matchExpressions:
+          - key: infra.k8/tier
+            operator: In
+            values:
+              - staging
+              - production
+  background: true
+  rules:
+    - name: disallow-pdb-that-blocks-disruptions
+      match:
+        resources:
+          kinds:
+            - PodDisruptionBudget
+      exclude:
+        resources:
+          namespaces:
+            - kube-system
+            - kyverno
+      validate:
+        message: "Avoid PDBs that block voluntary disruptions (minAvailable=100% or maxUnavailable=0)."
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.spec.minAvailable || '' }}"
+                operator: Equals
+                value: "100%"
+              - key: "{{ request.object.spec.maxUnavailable || '' }}"
+                operator: Equals
+                value: 0
+              - key: "{{ request.object.spec.maxUnavailable || '' }}"
+                operator: Equals
+                value: "0"

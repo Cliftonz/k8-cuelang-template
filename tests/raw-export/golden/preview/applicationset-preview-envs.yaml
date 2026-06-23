@@ -1,0 +1,96 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: preview-envs
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  goTemplate: true
+  generators:
+    - matrix:
+        generators:
+          - list:
+              elements:
+                - slug: salessage
+                  owner: example-org
+                  name: SalesSage
+                  dependsOnAI: "true"
+          - pullRequest:
+              github:
+                owner: '{{.owner}}'
+                repo: '{{.name}}'
+                tokenRef:
+                  secretName: github-token
+                  key: token
+                labels:
+                  - preview
+              requeueAfterSeconds: 30
+  template:
+    metadata:
+      name: '{{.slug}}-{{.number}}'
+      labels:
+        preview: "true"
+        pr-number: '{{.number}}'
+        appslug: '{{.slug}}'
+      annotations:
+        notifications.argoproj.io/subscribe.on-deployed.github: ""
+        notifications.argoproj.io/subscribe.on-health-degraded.github: ""
+        notifications.argoproj.io/subscribe.on-ai-outage.discord: ""
+        preview.example.com/depends-on-ai: '{{.dependsOnAI}}'
+      finalizers:
+        - resources-finalizer.argoproj.io
+    spec:
+      project: previews
+      info:
+        - name: PR URL
+          value: https://github.com/{{.owner}}/{{.name}}/pull/{{.number}}
+        - name: Preview URL
+          value: https://{{.slug}}-{{.number}}.preview.example.com
+      source:
+        repoURL: https://github.com/{{.owner}}/{{.name}}.git
+        targetRevision: '{{.head_sha}}'
+        path: chart
+        helm:
+          valuesObject:
+            image:
+              repository: ghcr.io/{{.owner}}/{{.name | toLower}}
+              commitSha: '{{.head_sha}}'
+            prNumber: '{{.number}}'
+            ingress:
+              enabled: true
+              className: cloudflare-tunnel
+              hosts:
+                - host: '{{.slug}}-{{.number}}.preview.example.com'
+                  paths:
+                    - path: /
+                      pathType: Prefix
+            fullnameOverride: '{{.slug}}-{{.number}}'
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: preview-{{.slug}}-{{.number}}
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            preview: "true"
+            pr-number: '{{.number}}'
+            appslug: '{{.slug}}'
+            infra.k8/tier: dev
+            infra.k8/cluster: preview
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - PruneLast=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

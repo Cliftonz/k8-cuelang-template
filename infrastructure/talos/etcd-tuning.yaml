@@ -1,0 +1,52 @@
+# Talos cluster config patch — etcd tuning for Crossplane-heavy clusters.
+#
+# Symptom this fixes:
+#   During the Crossplane install (66+ CRDs registered at once) etcd
+#   loses its leader for ~5–15s windows, RAFT term climbs into the high
+#   double digits, and kube-scheduler / kube-controller-manager static
+#   pods CrashLoopBackOff because their leader-election leases time out.
+#   `kubectl get --raw=/healthz` reports "[-]etcd failed: reason withheld".
+#   The apiserver-tuning patch alone does not address this — etcd is the
+#   next bottleneck once the apiserver itself has memory headroom.
+#
+# Apply via Omni:
+#   `ci/scripts/bootstrap-preview.sh` Phase 1.5 auto-applies this as
+#   ConfigPatch `400-etcd-tuning-${OMNI_CLUSTER}` alongside apiserver-
+#   tuning. The patch is scoped to control planes only via the
+#   `omni.sidero.dev/role-controlplane:` label — Talos rejects the
+#   `cluster.etcd:` block on worker machines with "etcd config is only
+#   allowed on control plane machines" and would otherwise leave them
+#   stuck in maintenance mode unable to merge their machine config.
+#   Manual application below is only needed when bootstrapping outside
+#   that script.
+#
+#   Cluster → Config Patches → Add new patch → paste the `cluster:` block
+#   below → Save & Sync. No reboot is required — Talos rewrites the etcd
+#   service config and restarts etcd on each control plane in turn (~30s
+#   each, ordered so quorum is preserved).
+#
+# Apply via talosctl (direct talosconfig only — Omni-proxied talosctl
+# returns PermissionDenied on machineconfig patches):
+#   talosctl -n <cp-ip-1>,<cp-ip-2>,<cp-ip-3> \
+#     patch machineconfig -p @infrastructure/talos/etcd-tuning.yaml
+#
+# Reference:
+#   https://etcd.io/docs/latest/tuning/
+#   https://www.talos.dev/latest/reference/configuration/v1alpha1/config/#Config.cluster.etcd
+
+cluster:
+  etcd:
+    extraArgs:
+      # Default 100ms is too tight when fsync latency on a shared/HDD-backed
+      # VM disk spikes above the heartbeat — leader loses quorum and a
+      # re-election happens. 250ms gives slow disks enough margin.
+      heartbeat-interval: "250"
+      # Must be ~10× heartbeat per etcd guidance.
+      election-timeout: "2500"
+      # Default 2 GiB chokes when many CRDs + their stored objects pile up
+      # during initial install. 4 GiB is plenty of headroom for the
+      # preview cluster's steady-state workload.
+      quota-backend-bytes: "4294967296"
+      # More frequent snapshots → smaller WAL replay, faster member
+      # rejoin after a transient network hiccup. Default is 100000.
+      snapshot-count: "10000"

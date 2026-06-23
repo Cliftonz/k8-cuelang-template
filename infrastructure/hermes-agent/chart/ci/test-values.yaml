@@ -1,0 +1,126 @@
+fullnameOverride: hermes-test
+
+apiServer:
+  enabled: true
+  host: 0.0.0.0
+  port: 8642
+  corsOrigins: https://app.example.test
+  modelName: hermes-agent-test
+
+webhook:
+  enabled: true
+  port: 8644
+
+telegramWebhook:
+  enabled: true
+  url: https://hermes.example.test/telegram
+  port: 8443
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: true
+
+rbac:
+  create: true
+  clusterWide: false
+  rules:
+    - apiGroups: [""]
+      resources: ["pods", "pods/log", "configmaps", "secrets"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: ["apps"]
+      resources: ["deployments"]
+      verbs: ["get", "list", "watch"]
+
+secrets:
+  OPENROUTER_API_KEY: sk-test
+  API_SERVER_KEY: api-test-key
+  TELEGRAM_BOT_TOKEN: bot-test
+  WEBHOOK_SECRET: webhook-test-secret
+
+service:
+  enabled: true
+  type: ClusterIP
+  ports:
+    - name: api-server
+      port: 8642
+      targetPort: 8642
+      containerPort: 8642
+    - name: webhook
+      port: 8644
+      targetPort: 8644
+      containerPort: 8644
+    - name: telegram-webhook
+      port: 8443
+      targetPort: 8443
+      containerPort: 8443
+
+ingress:
+  enabled: true
+  className: nginx
+  servicePortNumber: 8642
+  hosts:
+    - host: hermes.example.test
+      paths:
+        - path: /
+          pathType: Prefix
+
+virtualService:
+  enabled: true
+  gateways:
+    - mesh
+  hosts:
+    - hermes.example.test
+  servicePortNumber: 8642
+
+networkPolicy:
+  enabled: true
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8642
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+pdb:
+  enabled: true
+  minAvailable: 1
+
+probes:
+  liveness:
+    exec:
+      command:
+        - sh
+        - -c
+        - test -f /opt/data/config.yaml
+  readiness:
+    exec:
+      command:
+        - sh
+        - -c
+        - test -f /opt/data/config.yaml
+
+npmPackages:
+  - lodash@4.17.21
+
+extraObjects:
+  - apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: hermes-extra
+    data:
+      example: "true"

@@ -1,0 +1,5 @@
+.omx/
+*.tgz
+.DS_Store
+
+.omc/

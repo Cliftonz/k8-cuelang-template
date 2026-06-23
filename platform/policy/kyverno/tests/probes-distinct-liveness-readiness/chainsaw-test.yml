@@ -1,0 +1,54 @@
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: probes-distinct-liveness-readiness-valid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../probes-distinct-liveness-readiness.yaml
+    - try:
+        - apply:
+            file: ./namespace.yml
+    - try:
+        - apply:
+            file: ./valid-pod.yml
+            expect:
+              - match:
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: probes-distinct-valid
+                    namespace: kyverno-probes-distinct
+                check:
+                  ($error == null): true
+---
+apiVersion: chainsaw.kyverno.io/v1alpha1
+kind: Test
+metadata:
+  name: probes-distinct-liveness-readiness-invalid
+spec:
+  concurrent: false
+  skipDelete: false
+  steps:
+    - try:
+        - apply:
+            file: ../../probes-distinct-liveness-readiness.yaml
+    - try:
+        - apply:
+            file: ./namespace.yml
+    - try:
+        - apply:
+            file: ./invalid-pod.yml
+            expect:
+              - match:
+                  apiVersion: v1
+                  kind: Pod
+                  metadata:
+                    name: probes-distinct-invalid
+                    namespace: kyverno-probes-distinct
+                check:
+                  ($error != null): true
+                  (contains($error, 'Use distinct liveness and readiness HTTP endpoints')): true

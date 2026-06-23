@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: velero-restore-drill
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+rules:
+  - apiGroups:
+      - velero.io
+    resources:
+      - backups
+      - restores
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - namespaces
+    verbs:
+      - get
+      - list
+      - create
+      - delete
+  - apiGroups:
+      - ""
+    resources:
+      - secrets
+    resourceNames:
+      - openbao-keys
+    verbs:
+      - get

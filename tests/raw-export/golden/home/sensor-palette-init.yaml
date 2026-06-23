@@ -1,0 +1,102 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: palette-init
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: pr-opened
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - opened
+          - path: body.pull_request.number
+            type: number
+            comparator: '>'
+            value:
+              - "0"
+          - path: body.repository.full_name
+            type: string
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: post-initial-palette
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: palette-init-
+                namespace: argo-events
+              spec:
+                template:
+                  spec:
+                    serviceAccountName: argo-events-sa
+                    restartPolicy: Never
+                    containers:
+                      - name: post
+                        image: maniator/gh:v2.62.0
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 10m
+                            memory: 32Mi
+                          limits:
+                            cpu: 100m
+                            memory: 64Mi
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 300
+          parameters:
+            - src:
+                dependencyName: pr-opened
+                dataTemplate: |-
+                  set -eu
+                  REPO='{{ .Input.body.repository.full_name }}'
+                  PR='{{ .Input.body.pull_request.number }}'
+
+                  BODY='<!-- kelos-palette -->
+                  ## Kelos AI Agent
+
+                  | Agent | Status | Details | Updated |
+                  |---|---|---|---|
+                  | Review | — | _not requested_ | — |
+                  | CI Fix | — | _waiting for CI_ | — |
+                  | Explains | 0 | — | — |
+
+                  ### Commands
+                  | Command | Where | Description |
+                  |---|---|---|
+                  | `/review` | PR comment | Request a full AI review |
+                  | `/fix-ci` | PR comment | Auto-fix CI failures (auto-triggered) |
+                  | `/explain <question>` | Line comment | Explain code at a specific line |
+                  | `/help` | Any comment | Show available commands |
+
+                  _Palette initialized. Updates appear as agents run._'
+
+                  gh api -X POST "repos/${REPO}/issues/${PR}/comments" \
+                    -f body="$BODY"
+              dest: spec.template.spec.containers.0.command.2

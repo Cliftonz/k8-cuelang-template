@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-human-resume
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  dependencies:
+    - name: human-unblocked
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - unlabeled
+          - path: body.label.name
+            type: string
+            value:
+              - awaiting-human
+          - path: body.repository.full_name
+            type: string
+            comparator: =~
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: post-resume-note
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: feature-resume-
+                namespace: argo-events
+              spec:
+                template:
+                  spec:
+                    restartPolicy: Never
+                    containers:
+                      - name: resume
+                        image: ghcr.io/cli/cli:2.62.0
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-pat-events
+                                key: GITHUB_TOKEN
+                        resources:
+                          requests:
+                            cpu: 10m
+                            memory: 32Mi
+                          limits:
+                            cpu: 100m
+                            memory: 64Mi
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 300
+          parameters:
+            - src:
+                dependencyName: human-unblocked
+                dataTemplate: |-
+                  set -eu
+                  REPO='{{ .Input.body.repository.full_name }}'
+                  NUM='{{ if .Input.body.pull_request }}{{ .Input.body.pull_request.number }}{{ else }}{{ .Input.body.issue.number }}{{ end }}'
+                  gh api -X POST "repos/${REPO}/issues/${NUM}/comments" -f body=":unlock: Human unblocked this. Next agent action fires on the next natural trigger (new comment, push, label, etc.)."
+              dest: spec.template.spec.containers.0.command.2

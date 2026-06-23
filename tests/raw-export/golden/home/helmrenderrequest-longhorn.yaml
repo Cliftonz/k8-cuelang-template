@@ -1,0 +1,57 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: longhorn
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: longhorn
+    repository: https://charts.longhorn.io
+    version: 1.7.2
+  values:
+    defaultSettings:
+      defaultDataPath: /var/mnt/longhorn
+      defaultReplicaCount: 2
+      persistentVolumeReclaimPolicy: Delete
+      replicaAutoBalance: best-effort
+      storageMinimalAvailablePercentage: 10
+      orphanAutoDeletion: false
+    persistence:
+      defaultClass: true
+      defaultClassReplicaCount: 2
+      reclaimPolicy: Delete
+      defaultDataLocality: best-effort
+      defaultFsType: ext4
+    ingress:
+      enabled: false
+    longhornManager:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: "1"
+          memory: 512Mi
+    longhornDriver:
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi
+    longhornUI:
+      replicas: 1
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi

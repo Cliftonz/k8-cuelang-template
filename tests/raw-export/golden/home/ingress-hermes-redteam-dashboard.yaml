@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: Hermes Dashboard (Red-Team)
+    gethomepage.dev/group: Hermes Profiles
+    gethomepage.dev/icon: openai.png
+    gethomepage.dev/description: Autonomous pentest agent — Dex-gated
+    gethomepage.dev/href: https://hermes-redteam-dashboard.example.internal
+    gethomepage.dev/siteMonitor: http://hermes-redteam-dashboard.example.internal
+    gethomepage.dev/pod-selector: app.kubernetes.io/name=hermes-agent
+    traefik.ingress.kubernetes.io/router.middlewares: oauth-proxy-auth-with-redirect@kubernetescrd
+  name: hermes-redteam-dashboard
+  namespace: hermes
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: hermes-redteam-dashboard.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hermes-redteam-hermes-agent
+                port:
+                  number: 9119
+  tls:
+    - secretName: hermes-redteam-dashboard-tls
+      hosts:
+        - hermes-redteam-dashboard.example.internal

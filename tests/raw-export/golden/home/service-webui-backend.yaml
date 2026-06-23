@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: webui-backend
+  namespace: webui
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ports:
+    - name: http
+      port: 80
+      targetPort: 31028
+      protocol: TCP

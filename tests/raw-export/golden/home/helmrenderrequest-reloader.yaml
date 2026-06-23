@@ -1,0 +1,30 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: reloader
+  namespace: reloader
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: reloader
+    repository: https://stakater.github.io/stakater-charts
+    version: 2.2.12
+  values:
+    reloader:
+      watchGlobally: true
+      autoReloadAll: false
+      readOnlyRootFileSystem: true
+      deployment:
+        replicas: 1
+        resources:
+          requests:
+            cpu: 20m
+            memory: 64Mi
+          limits:
+            cpu: 200m
+            memory: 256Mi

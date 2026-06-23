@@ -1,0 +1,14 @@
+{
+  "items": [
+    {
+      "metadata": {"name": "openbao-backend"},
+      "status": {
+        "conditions": [
+          {"type": "Ready", "status": "False", "reason": "SecretSyncedError",
+           "message": "permission denied: missing role binding",
+           "lastTransitionTime": "__NOW_MINUS_6M__"}
+        ]
+      }
+    }
+  ]
+}

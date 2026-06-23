@@ -1,0 +1,10 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: pdb-disruptions-valid
+  namespace: kyverno-pdb-disruptions
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: pdb-test

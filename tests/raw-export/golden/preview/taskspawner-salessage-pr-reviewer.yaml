@@ -1,0 +1,48 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: salessage-pr-reviewer
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 2
+  pollInterval: 1m
+  when:
+    githubPullRequests:
+      state: open
+      commentPolicy:
+        triggerComment: /review
+        minimumPermission: write
+      reporting:
+        enabled: true
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: salessage
+    agentConfigRef:
+      name: pr-reviewer
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    promptTemplate: |-
+      Pull request #{{.Number}} ("{{.Title}}") on example-org/SalesSage
+      was tagged with `/review` by a maintainer.
+
+      PR body:
+      {{.Body}}
+
+      Branch under review: {{.Branch}}
+      Latest review state: {{.ReviewState}}
+
+      Recent comments (most recent last):
+      {{.ReviewComments}}
+
+      Run the review per your AgentConfig instructions and post
+      ONE summary comment on the PR. Stop after posting.
+    ttlSecondsAfterFinished: 86400

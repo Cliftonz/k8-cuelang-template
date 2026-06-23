@@ -1,0 +1,34 @@
+# Feature flags for the example-org AI pipeline. Each ConfigMap key here
+# is a runtime toggle that one or more sensor / Job scripts read before
+# proceeding. Edits to this file are the GitOps-tracked feature-flag
+# state — apply with:
+#   kubectl apply -f infrastructure/feature-flags/configmap.yaml
+#
+# This lives outside clusters/home/ because that directory is rebuilt
+# from CUE on every `make export-cluster` run, which would delete a
+# hand-written manifest. Treat this file as the canonical source.
+#
+# Default-deny semantics: each flag must equal the literal string "true"
+# for the gated path to run. Anything else (including unset) blocks.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: feature-flags
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: feature-flags
+data:
+  # Multi-agent review panel + lead-dev aggregator. ON since
+  # 2026-05-12 — activates the review panel for both example-org
+  # (full 6-role) and example-bot (trimmed 2-role: security + qa) on
+  # any PR labeled `pending-review`. Lead-dev fires once the panel's
+  # check runs complete and aggregates findings into commits.
+  # Quick disable: `ci/scripts/feature-review-killswitch.sh on`.
+  review-pipeline-enabled: "true"
+
+  # /fix-ci dispatch on every check_run.completed failure (excluding
+  # `^ai-` and `^Validate PR titles$` per autofix-dispatch.sh defaults).
+  # ci-failure-autofix sensor → autofix-dispatch.sh → /fix-ci comment
+  # → existing /fix-ci sensor → ci-fixer Kelos Task.
+  ci-autofix-enabled: "false"

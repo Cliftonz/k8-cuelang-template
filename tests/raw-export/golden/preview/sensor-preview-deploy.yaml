@@ -1,0 +1,89 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: preview-deploy
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  dependencies:
+    - name: ci-success
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.state
+            type: string
+            value:
+              - success
+          - path: body.context
+            type: string
+            value:
+              - ci/preview-build
+          - path: body.repository.full_name
+            type: string
+            comparator: =~
+            value:
+              - ^example-org/
+    - name: image-ready
+      eventSourceName: container-registry
+      eventName: image-push
+      filters:
+        data:
+          - path: body.repository
+            type: string
+            comparator: =~
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        conditions: ci-success && image-ready
+        name: sync-preview
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: sync-preview-
+                namespace: argo-events
+              spec:
+                template:
+                  spec:
+                    serviceAccountName: argo-events-sa
+                    containers:
+                      - name: sync
+                        image: quay.io/argoproj/argocd:v2.13.2
+                        command:
+                          - /bin/sh
+                          - -c
+                          - |-
+                            REPO_FULL=$(echo '${{.Input.body}}' | jq -r '.repository.full_name // .repository // empty')
+                            REPO_SLUG=$(echo "$REPO_FULL" | awk -F/ '{print $2}')
+                            PR_NUMBER=$(echo '${{.Input.body}}' | jq -r '.number // .pull_request.number // .pr_number // empty')
+                            if [ -n "$REPO_SLUG" ] && [ -n "$PR_NUMBER" ]; then
+                              APP_NAME="${REPO_SLUG}-pr-${PR_NUMBER}"
+                              argocd login $ARGOCD_SERVER --auth-token $ARGOCD_TOKEN --grpc-web
+                              if argocd app get "$APP_NAME" >/dev/null 2>&1; then
+                                argocd app sync "$APP_NAME" --force --async
+                              else
+                                echo "Application $APP_NAME not found — ApplicationSet may not have created it yet"
+                              fi
+                            else
+                              echo "Could not derive REPO_SLUG/PR_NUMBER from payload"
+                            fi
+                        env:
+                          - name: ARGOCD_SERVER
+                            value: argocd-server.argocd.svc.cluster.local
+                          - name: ARGOCD_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: argocd-ci-token
+                                key: token
+                    restartPolicy: Never
+                backoffLimit: 2

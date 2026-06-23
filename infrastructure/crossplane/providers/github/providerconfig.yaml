@@ -1,0 +1,17 @@
+# Default ProviderConfig for provider-upjet-github. Reads a JSON-shaped
+# credential blob from the Secret github-provider-creds, rendered by ESO
+# (see composites/home/externalsecrets.cue → "github-provider-creds").
+#
+# Expected credentials value:
+#   {"token":"<PAT>","owner":"example-org"}
+apiVersion: github.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: default
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: github-provider-creds
+      namespace: crossplane-system
+      key: credentials

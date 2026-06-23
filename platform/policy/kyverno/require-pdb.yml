@@ -1,0 +1,36 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pdb
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: require-pdb-for-controller
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+                - StatefulSet
+      context:
+        - name: pdbList
+          apiCall:
+            urlPath: "/apis/policy/v1/namespaces/{{request.namespace}}/poddisruptionbudgets"
+        - name: hpaList
+          apiCall:
+            urlPath: "/apis/autoscaling/v2/namespaces/{{request.namespace}}/horizontalpodautoscalers"
+        - name: workloadReplicas
+          variable:
+            jmesPath: "request.object.spec.replicas || `1`"
+      validate:
+        message: "A matching PodDisruptionBudget must be created and the workload must run at least two replicas or be covered by an HPA with minReplicas >= 2."
+        deny:
+          conditions:
+            any:
+              - key: "{{ request.object.metadata.name }}"
+                operator: NotIn
+                value: "{{ pdbList.items[].metadata.name }}"
+              - key: "{{ (workloadReplicas < `2`) && (length(hpaList.items[?spec.scaleTargetRef.name==request.object.metadata.name && spec.scaleTargetRef.kind==request.object.kind && spec.minReplicas >= `2`]) == `0`) }}"
+                operator: Equals
+                value: true

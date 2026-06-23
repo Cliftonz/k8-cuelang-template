@@ -1,0 +1,86 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: preview-build
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: pr-preview-event
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - opened
+              - reopened
+              - labeled
+              - synchronize
+          - path: body.pull_request.labels.#(name=="preview").name
+            type: string
+            value:
+              - preview
+          - path: body.repository.full_name
+            type: string
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: submit-build-workflow
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: preview-build-
+                namespace: argo-workflows
+                labels:
+                  app.kubernetes.io/managed-by: argo-events
+                  k8-infra/role: preview-build
+              spec:
+                workflowTemplateRef:
+                  name: preview-build
+                arguments:
+                  parameters:
+                    - name: owner
+                      value: PLACEHOLDER
+                    - name: repo
+                      value: PLACEHOLDER
+                    - name: slug
+                      value: PLACEHOLDER
+                    - name: sha
+                      value: PLACEHOLDER
+                    - name: prNumber
+                      value: PLACEHOLDER
+          parameters:
+            - src:
+                dependencyName: pr-preview-event
+                dataKey: body.repository.owner.login
+              dest: spec.arguments.parameters.0.value
+            - src:
+                dependencyName: pr-preview-event
+                dataKey: body.repository.name
+              dest: spec.arguments.parameters.1.value
+            - src:
+                dependencyName: pr-preview-event
+                dataTemplate: '{{ .Input.body.repository.name | lower }}'
+              dest: spec.arguments.parameters.2.value
+            - src:
+                dependencyName: pr-preview-event
+                dataKey: body.pull_request.head.sha
+              dest: spec.arguments.parameters.3.value
+            - src:
+                dependencyName: pr-preview-event
+                dataTemplate: '{{ printf "%.0f" .Input.body.pull_request.number }}'
+              dest: spec.arguments.parameters.4.value

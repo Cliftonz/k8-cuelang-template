@@ -1,0 +1,30 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: previews
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  description: PR preview environments — restricted scope
+  destinations:
+    - namespace: preview-*
+      server: https://kubernetes.default.svc
+  sourceRepos:
+    - https://charts.softonic.io
+    - https://traefik.github.io/charts
+    - https://openbao.github.io/openbao-helm
+    - https://charts.pascaliske.dev
+    - https://github.com/example-org/*
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceBlacklist:
+    - group: ""
+      kind: ResourceQuota
+    - group: networking.k8s.io
+      kind: NetworkPolicy

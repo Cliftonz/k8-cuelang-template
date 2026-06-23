@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-repo-server
+  namespace: argocd
+spec:
+  template:
+    spec:
+      initContainers:
+        - name: install-oras
+          image: alpine:3.19
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              arch="$(uname -m)"
+              case "$arch" in
+                x86_64) arch="amd64" ;;
+                aarch64) arch="arm64" ;;
+                *) echo "unsupported arch: $arch" >&2; exit 1 ;;
+              esac
+              apk add --no-cache curl tar
+              curl -L "https://github.com/oras-project/oras/releases/download/v1.1.0/oras_1.1.0_linux_${arch}.tar.gz" \
+                | tar -xz -C /work oras
+          volumeMounts:
+            - name: oras-bin
+              mountPath: /work
+      containers:
+        - name: argocd-repo-server
+          volumeMounts:
+            - name: oras-bin
+              mountPath: /usr/local/bin
+      volumes:
+        - name: oras-bin
+          emptyDir: {}

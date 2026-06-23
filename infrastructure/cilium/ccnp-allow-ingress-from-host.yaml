@@ -1,0 +1,53 @@
+# Additive cluster-wide allowance for host/apiserver -> pod ingress.
+#
+# Why this exists:
+#   The Kubernetes API server runs in the host network namespace on the
+#   control-plane node. Any time apiserver makes an outbound call to a
+#   ClusterIP that resolves to a pod (admission webhooks, aggregator API,
+#   conversion webhooks, ExtensionAPIServer), Cilium classifies the
+#   source as `reserved:host` or `reserved:remote-node` (depending on
+#   which node the connection initiates from after kube-proxy
+#   replacement socket-LB).
+#
+#   Standard Kubernetes NetworkPolicy ingress rules with
+#   `from: namespaceSelector` do NOT match the `host` / `remote-node`
+#   identities. So any namespace with a default-deny + intra-namespace-only
+#   ingress (e.g. `longhorn-internal` allowing only from
+#   `kubernetes.io/metadata.name=longhorn-system`) silently drops
+#   apiserver→webhook traffic the moment Cilium starts enforcing.
+#
+#   Symptom we hit on talos-home (2026-05-06):
+#     `failed calling webhook "mutator.longhorn.io": ... 10s timeout`
+#   blocking every Longhorn volume operation cluster-wide. Same trap
+#   waits for any other in-cluster admission webhook backed by a pod
+#   in a namespace with strict ingress (cert-manager, ESO, Argo, etc.).
+#
+#   This CCNP allows ingress from the reserved entities `host`,
+#   `remote-node`, and `kube-apiserver` to every pod, additively
+#   (`enableDefaultDeny: false` — does not isolate pods that have no
+#   other policy). Apiserver-driven traffic flows; per-namespace
+#   policies still control everything else.
+#
+#   Pair with infrastructure/cilium/ccnp-allow-kube-apiserver.yaml
+#   (which is the egress mirror of this rule).
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-ingress-from-host
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+spec:
+  description: |
+    Allow ingress from host / remote-node / kube-apiserver entities to
+    every pod. Required so apiserver-initiated webhook calls land on
+    their backend pods even in namespaces with default-deny ingress.
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  endpointSelector: {}
+  ingress:
+    - fromEntities:
+        - host
+        - remote-node
+        - kube-apiserver

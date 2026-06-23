@@ -1,0 +1,88 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: ci-fixer-jarvy
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 1
+  pollInterval: 1m
+  when:
+    githubPullRequests:
+      state: open
+      commentPolicy:
+        triggerComment: /fix-ci
+        minimumPermission: write
+      reporting:
+        enabled: true
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: jarvy
+    agentConfigRef:
+      name: ci-fixer-jarvy
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    promptTemplate: |-
+      CI failed on PR #{{.Number}} ({{.Title}}) on branch
+      {{.Branch}} (example-org/Jarvy). The PR branch is
+      already checked out.
+
+      Step 1. Read the most recent `/fix-ci` comment:
+        gh pr view {{.Number}} --comments --json comments \
+          --jq '.comments | map(select(.body | startswith("/fix-ci"))) | last.body'
+
+      The body contains ONE OR MORE "Failure N of M" blocks.
+      Each block gives:
+        - Workflow name + path
+        - Job name + URL
+        - Step name + number
+        - The EXACT command that failed (verbatim)
+        - Exit code
+        - Top 3 error-level log lines
+        - Annotations
+        - 200-line log tail
+
+      Step 2. For each Failure block, in order:
+        a. Run the exact command shown under "Command that
+           failed" (e.g. `cargo check`, `cargo test --lib`,
+           `cargo clippy --bin jarvy -- -D warnings`,
+           `cargo fmt --check`, `bash scripts/gen-docs.sh`,
+           `mkdocs build --strict`).
+        b. Confirm same exit code + headline error.
+        c. Fix ONLY files named in the block.
+        d. Re-run the command — must pass before proceeding.
+
+      Step 3. Commit:
+        git commit -m "fix(autofix): <one-line>" -m "<body>"
+
+      Step 4. Push to {{.Branch}}. The pre-push hook runs
+      `betterleaks` — if it blocks, STOP and comment on the
+      PR with the flagged path. Do NOT use `--no-verify`.
+
+      Hard stops (from AgentConfig):
+        - No edits outside the listed scope.
+        - No `#[allow(...)]` to silence clippy. Fix the code.
+        - No adding crate dependencies.
+        - No disabling tests.
+        - No version bumps in Cargo.toml / cliff.toml /
+          release.toml / CHANGELOG.md (release flow owns those).
+        - No changes to `.github/workflows/`, `infra/`, `dist/`.
+        - `scripts/gen-docs.sh` drift: build the binary, re-run
+          the script, commit only doc lines tied to your
+          earlier change. If other doc lines also drift,
+          scope-out + comment.
+        - betterleaks blocked push → STOP + comment, do NOT
+          bypass.
+        - If fix would violate scope: post a comment
+          explaining + stop. Do not push.
+        - If command passes without edits (flake): post a
+          comment + stop. No no-op commit.
+    ttlSecondsAfterFinished: 86400

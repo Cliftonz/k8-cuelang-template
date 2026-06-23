@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: longhorn-frontend-omni
+  namespace: longhorn-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+  annotations:
+    omni-kube-service-exposer.sidero.dev/port: "50082"
+    omni-kube-service-exposer.sidero.dev/label: Longhorn (home)
+    omni-kube-service-exposer.sidero.dev/prefix: longhornhome
+spec:
+  type: ClusterIP
+  selector:
+    app: longhorn-ui
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+      protocol: TCP

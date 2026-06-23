@@ -1,0 +1,169 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  validate-and-render:
+    runs-on: ubuntu-latest
+    env:
+      # jarvy isn't installed on the runner; bypass the Makefile dev-env gate.
+      SKIP_JARVY_DOCTOR: "1"
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install CUE
+        run: |
+          curl -fsSL "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_amd64.tar.gz" | tar -xz
+          install -m 0755 cue /usr/local/bin/cue
+          cue version
+
+      - name: Install yq
+        run: |
+          curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/v4.44.3/yq_linux_amd64"
+          chmod +x /usr/local/bin/yq
+
+      - name: cue vet
+        run: cue vet ./...
+
+      - name: Render preview cluster
+        run: make export-cluster CLUSTER=preview UNIFI=true
+
+      - name: Diff against committed clusters/ (catches drift)
+        run: |
+          if [ -d "clusters-committed" ]; then
+            diff -r clusters-committed/preview clusters/preview && echo "no drift"
+          fi
+
+      - name: Install Helm (for raw-fallback render)
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.0
+
+      - name: Raw-fallback — dispatcher coverage check
+        run: ./ci/scripts/test-raw-coverage.sh
+
+      - name: Raw-fallback — post-processor unit tests
+        run: ./ci/scripts/test-postprocessors.sh
+
+      - name: validate-tool-name — prompt-injection classifier unit tests
+        run: bash ./ci/scripts/tests/test-validate-tool-name.sh
+
+      - name: tool-discovery quarantine — no-data-leak integration test
+        run: bash ./ci/scripts/tests/test-quarantine-no-data-leak.sh
+
+      - name: autofix-dispatch — TRUST_BOUNDARY wrapping test
+        run: bash ./ci/scripts/tests/test-autofix-trust-boundary.sh
+
+      - name: Render raw-fallback (RAW_HELM=skip, both clusters)
+        run: |
+          RAW_HELM=skip make export-raw CLUSTER=preview
+          RAW_HELM=skip make export-raw CLUSTER=home
+
+      - name: Verify raw output has no Crossplane residue
+        run: |
+          for cluster in preview home; do
+            echo "checking clusters/${cluster}-raw/..."
+            if grep -rE '^(kind: X|kind: Composition$|kind: CompositeResourceDefinition$)' "clusters/${cluster}-raw/" 2>/dev/null; then
+              echo "ERROR: raw output for $cluster contains Crossplane resources"
+              exit 1
+            fi
+          done
+          echo "raw output is Crossplane-free"
+
+      - name: Raw-export golden regression
+        run: ./ci/scripts/test-raw-export.sh
+
+      - name: Raw-export count parity (renderer-vs-input)
+        run: ./ci/scripts/test-raw-parity.sh
+
+      - name: Raw-export validity (kubeconform)
+        run: ./ci/scripts/test-raw-validity.sh
+
+      - name: Install Pluto
+        run: |
+          curl -fsSL "https://github.com/FairwindsOps/pluto/releases/download/v5.24.0/pluto_5.24.0_linux_amd64.tar.gz" | tar -xz pluto
+          install -m 0755 pluto /usr/local/bin/pluto
+          pluto version
+
+      - name: Scan rendered manifests for deprecated/removed K8s APIs
+        run: make lint-deprecated-apis
+
+      - name: Render raw-fallback with helm template (smoke)
+        run: make export-raw CLUSTER=home
+
+      - name: Verify helm-rendered output replaced HelmRenderRequest placeholders
+        run: |
+          if grep -rh '^kind: HelmRenderRequest$' clusters/home-raw/ 2>/dev/null; then
+            echo "ERROR: HelmRenderRequest placeholders remain after helm template"
+            exit 1
+          fi
+          echo "helm-rendered output clean"
+
+      - name: Upload rendered manifests artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-preview
+          path: clusters/preview/
+          retention-days: 7
+
+      - name: Upload raw-fallback artifact
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-preview-raw
+          path: clusters/preview-raw/
+          retention-days: 7
+
+  # kyverno-policy-tests: disabled — kyverno policies are not currently
+  # emitted to any cluster and the chainsaw/kind setup is dead weight in
+  # CI. Sources kept on disk under platform/policy/kyverno/ for future
+  # re-enable. To restore, revert this commit.
+  #
+  # kyverno-policy-tests:
+  #   runs-on: ubuntu-latest
+  #   needs: validate-and-render
+  #   steps:
+  #     - uses: actions/checkout@v5
+  #     - name: Detect kyverno tests
+  #       id: detect
+  #       run: |
+  #         if [ -z "$(find platform/policy/kyverno/tests -name '*.yaml' 2>/dev/null)" ]; then
+  #           echo "has_tests=false" >> "$GITHUB_OUTPUT"
+  #         else
+  #           echo "has_tests=true" >> "$GITHUB_OUTPUT"
+  #         fi
+  #     - name: Setup kind
+  #       if: steps.detect.outputs.has_tests == 'true'
+  #       uses: helm/kind-action@v1
+  #       with:
+  #         version: v0.22.0
+  #         cluster_name: kyverno-tests
+  #     - name: Install Helm
+  #       if: steps.detect.outputs.has_tests == 'true'
+  #       uses: azure/setup-helm@v4
+  #       with:
+  #         version: v3.18.0
+  #     - name: Install Chainsaw
+  #       if: steps.detect.outputs.has_tests == 'true'
+  #       run: |
+  #         curl -fsSL "https://github.com/kyverno/chainsaw/releases/download/v0.2.14/chainsaw_linux_amd64.tar.gz" | tar -xz
+  #         install -m 0755 chainsaw /usr/local/bin/chainsaw
+  #     - name: Install Kyverno
+  #       if: steps.detect.outputs.has_tests == 'true'
+  #       run: |
+  #         helm repo add kyverno https://kyverno.github.io/kyverno/
+  #         helm repo update
+  #         helm install kyverno kyverno/kyverno --namespace kyverno --create-namespace
+  #         kubectl -n kyverno wait --for=condition=Available deploy -l app.kubernetes.io/name=kyverno --timeout=5m
+  #     - name: Run chainsaw tests
+  #       if: steps.detect.outputs.has_tests == 'true'
+  #       run: chainsaw test platform/policy/kyverno/tests

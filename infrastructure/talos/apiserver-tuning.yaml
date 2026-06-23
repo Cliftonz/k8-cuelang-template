@@ -1,0 +1,83 @@
+# Talos cluster config patch — kube-apiserver tuning for Crossplane-heavy
+# clusters with many CRDs registering simultaneously.
+#
+# Symptom this fixes:
+#   During initial install of Crossplane (39 XRDs) + Argo CD (~20 CRDs) +
+#   Kubescape + Longhorn, kube-apiserver on small CP nodes gets OOMKilled
+#   repeatedly, causing "control plane unhealthy" flapping in Omni and
+#   long install times. The fix is to raise the in-flight request caps so
+#   the apiserver queues less, plus ensure CP nodes have at least 2-4 GiB
+#   of RAM allocated.
+#
+# Apply via Omni:
+#   Cluster → Config Patches → Add new patch → paste the `cluster:` block
+#   below → Save & Sync → rolling reboot of CP nodes.
+#
+# Apply via talosctl:
+#   talosctl -n <cp-ip-1>,<cp-ip-2>,<cp-ip-3> \
+#     patch machineconfig -p @infrastructure/talos/apiserver-tuning.yaml
+#   talosctl -n <cp-ip> reboot   # one at a time
+#
+# Prerequisites for effectiveness:
+#   - CP node VM must have >= 2 GiB RAM (4 GiB recommended for this stack).
+#     The memory ask below is a floor; physical VM RAM still needs to be
+#     sized appropriately.
+#
+# Reference:
+#   https://kubernetes.io/docs/concepts/cluster-administration/flow-control/
+#   https://www.talos.dev/latest/reference/configuration/v1alpha1/config/
+
+cluster:
+  apiServer:
+    extraArgs:
+      # Allow more concurrent reads (LIST/WATCH/GET). Default is 400.
+      max-requests-inflight: "1500"
+      # Allow more concurrent writes (CREATE/UPDATE/DELETE). Default is 200.
+      max-mutating-requests-inflight: "700"
+      # Larger watch cache to absorb CRD registration bursts.
+      watch-cache-sizes: "compositeresourcedefinitions.apiextensions.crossplane.io#500,releases.helm.crossplane.io#500"
+      # Longer request timeout so slow reconciles don't cascade into retries.
+      request-timeout: "2m0s"
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+  controllerManager:
+    extraArgs:
+      # Raise qps/burst so controller-manager can keep up with many new CRDs.
+      kube-api-qps: "100"
+      kube-api-burst: "150"
+      # Bigger leader-election windows. Defaults are 15s/10s/2s, which crash
+      # the loser pod whenever the apiserver is briefly slow during install
+      # bursts. Cluster keeps working (peer takes leader) but log noise +
+      # restart counts pile up. 60s/40s/5s tolerates ~40s of apiserver
+      # slowness before the lease drops.
+      leader-elect-lease-duration: "60s"
+      leader-elect-renew-deadline: "40s"
+      leader-elect-retry-period: "5s"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+  scheduler:
+    extraArgs:
+      kube-api-qps: "100"
+      kube-api-burst: "150"
+      leader-elect-lease-duration: "60s"
+      leader-elect-renew-deadline: "40s"
+      leader-elect-retry-period: "5s"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi

@@ -1,0 +1,6 @@
+fullnameOverride: hermes-external-bootstrap
+
+bootstrap:
+  enabled: true
+  overwrite: false
+  existingConfigMap: hermes-shared-bootstrap

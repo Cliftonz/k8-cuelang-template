@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: probes-distinct-invalid
+  namespace: kyverno-probes-distinct
+spec:
+  containers:
+    - name: app
+      image: nginx:1.25
+      ports:
+        - containerPort: 8080
+      readinessProbe:
+        httpGet:
+          path: /health
+          port: 8080
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: 8080

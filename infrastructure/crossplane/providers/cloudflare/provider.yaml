@@ -1,0 +1,41 @@
+# Crossplane providers for Cloudflare (wildbitca community fork).
+# Marketplace: https://marketplace.upbound.io/providers/wildbitca/
+#
+# Upstream crossplane-contrib/provider-upjet-cloudflare has zero
+# releases (repo created 2026-03-06, still in early development), so
+# the wildbitca fork is the only published option for now. Switch back
+# to upstream when they cut their first release.
+#
+# Family layout. The "cloudflare" base provider ships only the
+# account-level / top-level resources (Ruleset, Filter, Worker, etc.).
+# Zone-scoped resources (DNS records, zone settings, holds, cache
+# config) live in a separate `provider-cloudflare-zone` package.
+# We install both: cloudflare base for Rulesets (rate-limit + WAF
+# custom rules) and zone for Zone import + future ZoneSettings.
+#
+# API token scopes required:
+#   Zone → Zone → Read              (zone ID + settings read)
+#   Zone → Zone WAF → Edit          (custom WAF rules via Rulesets)
+#   Zone → Zone Settings → Edit     (Bot Fight Mode toggle, future)
+#   Account → Rulesets → Edit       (rate-limit rules)
+# Zone Resources: include example.com.
+#
+# Credentials live in OpenBao at preview/cloudflare-provider-token,
+# seeded via ci/scripts/seed-cloudflare-token.sh. ESO projects them
+# into Secret/cloudflare-provider-creds in crossplane-system (see
+# composites/home/externalsecrets.cue).
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-cloudflare-cloudflare
+spec:
+  package: xpkg.upbound.io/wildbitca/provider-cloudflare-cloudflare:v0.2.5
+  packagePullPolicy: IfNotPresent
+---
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-cloudflare-zone
+spec:
+  package: xpkg.upbound.io/wildbitca/provider-cloudflare-zone:v0.2.5
+  packagePullPolicy: IfNotPresent

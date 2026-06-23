@@ -1,0 +1,16 @@
+# Grant Provider Helm the permissions needed to install Helm charts.
+# Charts may create arbitrary resource types including CRDs, so the Helm
+# provider SA requires cluster-admin access (same pattern recommended by
+# Crossplane docs for provider-helm with InjectedIdentity).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crossplane-provider-helm-cluster-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-admin
+subjects:
+  - kind: Group
+    name: system:serviceaccounts:crossplane-system
+    apiGroup: rbac.authorization.k8s.io

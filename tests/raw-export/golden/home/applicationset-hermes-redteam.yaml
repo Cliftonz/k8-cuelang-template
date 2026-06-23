@@ -1,0 +1,489 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: hermes-redteam
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  generators:
+    - list:
+        elements:
+          - {}
+  template:
+    metadata:
+      name: hermes-redteam
+      labels:
+        app.kubernetes.io/part-of: bb-platform
+        hermes.example.internal/profile: redteam
+      finalizers:
+        - resources-finalizer.argoproj.io
+    spec:
+      project: bb-platform
+      source:
+        repoURL: https://github.com/example-org/k8-infra.git
+        targetRevision: main
+        path: infrastructure/hermes-agent/chart
+        helm:
+          valuesObject:
+            deploymentAnnotations:
+              reloader.stakater.com/auto: "true"
+            command:
+              - /opt/hermes/.venv/bin/hermes
+            image:
+              repository: nousresearch/hermes-agent
+              tag: v2026.5.29.2
+              pullPolicy: IfNotPresent
+            persistence:
+              enabled: true
+              size: 10Gi
+              storageClass: longhorn
+              mountPath: /opt/data
+            resources:
+              requests:
+                cpu: 250m
+                memory: 1Gi
+              limits:
+                cpu: "2"
+                memory: 4Gi
+            bootstrap:
+              enabled: true
+              overwrite: false
+            config:
+              values:
+                model:
+                  default: openai/gpt-5-codex
+                  provider: auto
+                agent:
+                  max_turns: 120
+                  gateway_timeout: 1800
+                  restart_drain_timeout: 60
+                  tool_use_enforcement: auto
+                memory:
+                  memory_enabled: true
+                  provider: honcho
+            soul:
+              text: |-
+                You are the Example Org INTERNAL RED TEAM — an autonomous
+                offensive-security operator. Your mandate: find, prove, and help
+                FIX security and compliance weaknesses across infrastructure and
+                SaaS products that Example Org owns or is explicitly authorized
+                to test. You break things to harden them; every finding ends in
+                actionable defensive advice.
+
+                MISSION
+                - Hunt for real, exploitable weaknesses across our own systems,
+                  cloud, and SaaS products. Prove impact with the least-damaging
+                  proof necessary — enough to be undeniable, never more.
+                - For EVERY finding, deliver remediation: the fix, the root
+                  cause, and how to verify it is closed. Be willing and able to
+                  advise concretely on how to fix what you find.
+                - Frame findings against the controls that matter to us:
+                  SOC 2, ISO 27001, ISO 42001 (AI management), and OWASP
+                  (Top 10, API Top 10, ASVS). Tie each finding to the control it
+                  violates and the evidence an auditor would want.
+
+                SCOPE — non-negotiable
+                - Operate ONLY against assets Example Org owns or has written
+                  authorization to test. Confirm scope + authorization before any
+                  active scanning or exploitation.
+                - Be extremely careful with ANYTHING outside our control. Never
+                  touch third-party systems, shared/upstream infrastructure, or
+                  assets you cannot confirm are in scope — not even to look. If a
+                  path leads off-scope, STOP and report it instead of following it.
+                - Least-impact by default: passive recon and read-only checks
+                  first; active testing only with scope confirmed; avoid
+                  destructive actions and avoid exfiltrating data beyond the
+                  minimum needed to prove a finding.
+
+                TRADECRAFT / OPSEC
+                - Emulate a real external adversary. ALWAYS route active testing
+                  through the configured obfuscated, anonymized egress (VPN /
+                  proxy / Tor path) so detection is exercised honestly and the
+                  red-team infrastructure and identity are not exposed or traced.
+                  Never test our externally-facing products from an attributable
+                  or whitelisted path a real attacker would not have.
+                - This obscures you from the BLUE TEAM to test detection — it is
+                  never about evading accountability. Keep your OWN complete,
+                  timestamped record of every action (targets, tools, payloads,
+                  results) for the engagement report and audit trail.
+
+                TOOLING
+                - Use the kali-pentest skill in SERVER MODE — SSH to the
+                  authorized Kali host (the operator supplies the target as
+                  `<user>@<host>`; key at `~/.ssh/kali_key`) — for nmap, the
+                  Burp/web stack, metasploit, hydra/hashcat, aircrack-ng, plus the
+                  installed forensics / OSINT / web-pentest skills.
+                - If you lack a tool, credential, network path, or obfuscated
+                  egress an authorized task needs: set it up yourself when you can
+                  do so safely, otherwise REQUEST that it be connected/provisioned
+                  and state exactly what you need and why. Do NOT run active tests
+                  over a non-obfuscated path — get the safe egress in place first.
+
+                REPORTING
+                - Each finding: title, severity, affected asset, reproduction,
+                  proof, business + compliance impact (cite the SOC 2 / ISO 27001 /
+                  ISO 42001 / OWASP control), and a concrete remediation +
+                  verification step. Log engagements to your task-memory + the
+                  honcho redteam-engagements workspace.
+            secrets:
+              existingSecret: hermes-redteam-secrets
+            extraEnv:
+              - name: PYTHONPATH
+                value: /honcho-pkg
+            extraVolumeMounts:
+              - name: honcho-pkg
+                mountPath: /honcho-pkg
+            extraInitContainers:
+              - name: install-honcho-plugin
+                image: python:3.13-slim
+                imagePullPolicy: IfNotPresent
+                command:
+                  - sh
+                  - -c
+                args:
+                  - |-
+                    set -e
+                    echo '> Installing honcho-ai into /honcho-pkg...'
+                    pip install --no-cache-dir --target /honcho-pkg honcho-ai 2>&1 | tail -3
+                    if [ ! -f /opt/data/honcho.json ]; then
+                      echo '> Seeding honcho.json (workspace=redteam-engagements, aiPeer=redteam)...'
+                      cat > /opt/data/honcho.json <<JSON
+                    {"hosts":{"hermes":{"enabled":true,"workspace":"redteam-engagements","aiPeer":"redteam","recallMode":"hybrid","writeFrequency":"async"}}}
+                    JSON
+                    else
+                      echo '> honcho.json already exists; leaving as-is.'
+                    fi
+                volumeMounts:
+                  - name: honcho-pkg
+                    mountPath: /honcho-pkg
+                  - name: data
+                    mountPath: /opt/data
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 128Mi
+                  limits:
+                    cpu: 500m
+                    memory: 256Mi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  runAsNonRoot: true
+                  runAsUser: 10000
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+              - name: install-security-skills
+                image: alpine/git:2.45.2
+                imagePullPolicy: IfNotPresent
+                command:
+                  - sh
+                  - -c
+                args:
+                  - |-
+                    set -e
+                    SKILLS=/opt/data/skills
+                    mkdir -p "$SKILLS"
+                    # Curated filter: keep only offensive / recon / OWASP / compliance
+                    # skills from the Anthropic set; drop forensics / DFIR / blue-team.
+                    INC='injection|xss|csrf|ssrf|xxe|sqli|-rce|lfi|rfi|ssti|idor|deserializ|penetration-test|pentest|red-team|purple-team|reconnaissance|osint|enumerat|subdomain|exploit|privilege-escal|lateral-move|command-and-control|phishing|social-engineer|password-|kerberoast|bloodhound|active-directory|pass-the-|man-in-the-middle|wireless|wifi|bluetooth|api-security|web-application|graphql|jwt-|oauth|burp|metasploit|nmap|payload|evasion|bypass|brute|fuzz|cracking|spoofing|poisoning|hijack|smuggling|takeover|misconfig|vulnerability-scan|vulnerability-assess|cloud-penetration|container-escape|^scanning-|iso-27001|iso27001|soc-2|soc2|pci-dss|gdpr|hipaa|nist-|cis-bench|owasp'
+                    DROP='malware|forensic|incident-response|triage|yara|virustotal|-ioc|disk-image|memory-dump|sandbox|reverse-eng|threat-hunt|detecting-|detection|investigat|hunting-|analyzing-|-siem|-edr|soc-analyst|recovering-|eradicat|containing-|correlat|cti-report|mitre-navigator|kill-chain|incident-'
+                    # 1. Hermes official optional security skills (sparse
+                    #    checkout — avoids cloning the whole agent repo).
+                    if [ ! -d "$SKILLS/web-pentest" ]; then
+                      echo '> hermes optional-skills/security...'
+                      git clone --depth=1 --filter=blob:none --sparse https://github.com/NousResearch/hermes-agent.git /tmp/h
+                      ( cd /tmp/h && git sparse-checkout set optional-skills/security )
+                      cp -r /tmp/h/optional-skills/security/* "$SKILLS"/ 2>/dev/null || true
+                      rm -rf /tmp/h
+                    fi
+                    # 2. kali-pentest (server-mode Kali tools).
+                    if [ ! -d "$SKILLS/kali-pentest" ]; then
+                      echo '> kali-pentest...'
+                      git clone --depth=1 https://github.com/x-glacier/kali-pentest.git /tmp/kp
+                      cp -r /tmp/kp/kali-pentest "$SKILLS/kali-pentest"
+                      rm -rf /tmp/kp
+                    fi
+                    # 3. Anthropic set — curated via INC/DROP (offensive /
+                    #    recon / OWASP / compliance; no forensics/DFIR/blue).
+                    if [ ! -f "$SKILLS/.anthropic-sec.installed" ]; then
+                      echo '> Anthropic-Cybersecurity-Skills (curated)...'
+                      git clone --depth=1 https://github.com/mukul975/Anthropic-Cybersecurity-Skills.git /tmp/acs
+                      for d in $(ls /tmp/acs/skills | grep -iE "$INC" | grep -ivE "$DROP"); do
+                        cp -r "/tmp/acs/skills/$d" "$SKILLS/$d" 2>/dev/null || true
+                      done
+                      touch "$SKILLS/.anthropic-sec.installed"
+                      rm -rf /tmp/acs
+                    fi
+                    # 4. super-hermes prism skills + prisms (analytical
+                    #    prompt-writing). Installs into skills/ AND prisms/.
+                    if [ ! -d "$SKILLS/prism-scan" ]; then
+                      echo '> super-hermes prisms...'
+                      git clone --depth=1 https://github.com/Cranot/super-hermes.git /tmp/sh
+                      cp -r /tmp/sh/skills/* "$SKILLS"/ 2>/dev/null || true
+                      mkdir -p /opt/data/prisms
+                      cp -r /tmp/sh/prisms/* /opt/data/prisms/ 2>/dev/null || true
+                      rm -rf /tmp/sh
+                    fi
+                    # 5. Custom task-memory skill — delivered via the
+                    #    hermes-redteam-custom-skills ConfigMap (mounted at
+                    #    /custom-skills) so it needs no repo creds.
+                    if [ ! -d "$SKILLS/task-memory" ] && [ -d /custom-skills ]; then
+                      echo '> custom task-memory skill...'
+                      mkdir -p "$SKILLS/task-memory"
+                      cp /custom-skills/* "$SKILLS/task-memory/" 2>/dev/null || true
+                    fi
+                    # ---- Builtin skills: keep only security / support categories ----
+                    # The image ships ~85 builtin skills under /opt/hermes/skills/<category>
+                    # (creative, gaming, media, productivity, ...). Pre-seed ONLY the
+                    # security / support categories into the load path, then drop the
+                    # .no-bundled-skills marker so the gateway seeder does not add the rest.
+                    for c in autonomous-ai-agents devops dogfood domain github mcp red-teaming research software-development yuanbao; do
+                      [ -d "/opt/hermes/skills/$c" ] && [ ! -d "$SKILLS/$c" ] && cp -r "/opt/hermes/skills/$c" "$SKILLS/$c" 2>/dev/null || true
+                    done
+                    touch /opt/data/.no-bundled-skills
+                    # Belt-and-suspenders: drop non-security categories a prior seed added.
+                    for c in apple creative data-science diagramming email gaming gifs inference-sh media mlops note-taking productivity smart-home social-media; do
+                      rm -rf "$SKILLS/$c"
+                    done
+                    # Clean up the legacy wrong-path clone (~/.hermes/skills is never loaded
+                    # by hermes when HERMES_HOME is set, so old installs left dead weight).
+                    rm -rf /opt/data/home/.hermes/skills 2>/dev/null || true
+                    echo "> skills installed: $(ls "$SKILLS" | wc -l)"
+                volumeMounts:
+                  - name: data
+                    mountPath: /opt/data
+                  - name: custom-skills
+                    mountPath: /custom-skills
+                    readOnly: true
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+              - name: install-kali-ssh-key
+                image: busybox:1.36
+                imagePullPolicy: IfNotPresent
+                command:
+                  - sh
+                  - -c
+                args:
+                  - |-
+                    set -e
+                    mkdir -p /opt/data/home/.ssh
+                    if [ -n "${KALI_SSH_KEY:-}" ]; then
+                      printf '%s' "$KALI_SSH_KEY" > /opt/data/home/.ssh/kali_key
+                      chmod 600 /opt/data/home/.ssh/kali_key
+                      echo '> wrote ~/.ssh/kali_key'
+                    else
+                      echo '> KALI_SSH_KEY unset — seed it in OpenBao secret/users/redteam/hermes'
+                    fi
+                env:
+                  - name: KALI_SSH_KEY
+                    valueFrom:
+                      secretKeyRef:
+                        name: hermes-redteam-secrets
+                        key: KALI_SSH_KEY
+                        optional: true
+                volumeMounts:
+                  - name: data
+                    mountPath: /opt/data
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  runAsNonRoot: true
+                  runAsUser: 1000
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+            apiServer:
+              enabled: true
+              host: 0.0.0.0
+              port: 8642
+              modelName: hermes-agent
+            service:
+              enabled: true
+              type: ClusterIP
+              ports:
+                - name: api-server
+                  port: 8642
+                  targetPort: 8642
+                  containerPort: 8642
+                  protocol: TCP
+                - name: dashboard
+                  port: 9119
+                  targetPort: 9119
+                  containerPort: 9119
+                  protocol: TCP
+            extraVolumes:
+              - name: tui-dist
+                emptyDir:
+                  sizeLimit: 64Mi
+              - name: honcho-pkg
+                emptyDir:
+                  sizeLimit: 200Mi
+              - name: custom-skills
+                configMap:
+                  name: hermes-redteam-custom-skills
+            extraObjects:
+              - apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: hermes-redteam-custom-skills
+                  namespace: hermes
+                data:
+                  SKILL.md: |-
+                    # task-memory
+
+                    Lightweight local task memory. Maintains a small JSON index of past
+                    tasks keyed by `task_type` at `~/.hermes/task-memory.json`, so you can
+                    recall "what did I do with this before?" without replaying full
+                    session history. Sub-second, no external deps. Complements honcho
+                    (rich cross-session memory); this is a fast local index of concrete
+                    prior tasks + outcomes for repetitive engagement work.
+
+                    ## Use
+
+                    - After finishing a discrete task, log it:
+                      `python3 ~/.hermes/skills/task-memory/task_index.py <task_type> "<one-line summary + outcome>"`
+                    - Before similar work, recall prior tasks:
+                      `python3 ~/.hermes/skills/task-memory/retrieve.py <task_type> [n]`
+                      (n defaults to 3; task_type "*" = latest across all types)
+
+                    `task_type` examples: recon, nmap, web-pentest, exploit, report, or a
+                    target host. Keep summaries one line, factual, with the outcome.
+                  task_index.py: |-
+                    #!/usr/bin/env python3
+                    import json, os, sys, time
+                    INDEX = os.path.expanduser("~/.hermes/task-memory.json")
+                    def load():
+                        try:
+                            d = json.load(open(INDEX))
+                            return d if isinstance(d, list) else []
+                        except Exception:
+                            return []
+                    if len(sys.argv) < 3:
+                        sys.exit("usage: task_index.py <task_type> <summary...>")
+                    recs = load()
+                    recs.append({"iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                                 "task_type": sys.argv[1].strip().lower(),
+                                 "summary": " ".join(sys.argv[2:]).strip()})
+                    recs = recs[-2000:]
+                    os.makedirs(os.path.dirname(INDEX), exist_ok=True)
+                    json.dump(recs, open(INDEX, "w"), ensure_ascii=False)
+                    print("logged %s (%d records)" % (sys.argv[1].strip().lower(), len(recs)))
+                  retrieve.py: |-
+                    #!/usr/bin/env python3
+                    import json, os, sys
+                    INDEX = os.path.expanduser("~/.hermes/task-memory.json")
+                    try:
+                        recs = json.load(open(INDEX))
+                    except Exception:
+                        recs = []
+                    tt = sys.argv[1].strip().lower() if len(sys.argv) > 1 else "*"
+                    try:
+                        n = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+                    except Exception:
+                        n = 3
+                    if tt != "*":
+                        recs = [r for r in recs if r.get("task_type") == tt]
+                    recs = recs[-n:][::-1]
+                    if not recs:
+                        print("(no prior tasks for %s)" % tt)
+                    for r in recs:
+                        print("%s  [%s]  %s" % (r.get("iso", "?"), r.get("task_type", "?"), r.get("summary", "")))
+            extraContainers:
+              - name: dashboard
+                image: nousresearch/hermes-agent:v2026.5.29.2
+                imagePullPolicy: IfNotPresent
+                workingDir: /opt/hermes
+                command:
+                  - /opt/hermes/.venv/bin/hermes
+                args:
+                  - dashboard
+                  - --host
+                  - 0.0.0.0
+                  - --port
+                  - "9119"
+                  - --insecure
+                  - --no-open
+                  - --skip-build
+                  - --tui
+                envFrom:
+                  - secretRef:
+                      name: hermes-redteam-secrets
+                env:
+                  - name: HERMES_HOME
+                    value: /opt/data
+                  - name: HOME
+                    value: /opt/data
+                  - name: HERMES_DASHBOARD_TUI
+                    value: "1"
+                  - name: PYTHONPATH
+                    value: /honcho-pkg
+                ports:
+                  - name: dashboard
+                    containerPort: 9119
+                    protocol: TCP
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 512Mi
+                  limits:
+                    cpu: "1"
+                    memory: 2Gi
+                securityContext:
+                  allowPrivilegeEscalation: false
+                  readOnlyRootFilesystem: true
+                  capabilities:
+                    drop:
+                      - ALL
+                  seccompProfile:
+                    type: RuntimeDefault
+                volumeMounts:
+                  - name: data
+                    mountPath: /opt/data
+                  - name: tmp
+                    mountPath: /tmp
+                  - name: tui-dist
+                    mountPath: /opt/hermes/ui-tui/dist
+                  - name: honcho-pkg
+                    mountPath: /honcho-pkg
+            ingress:
+              enabled: false
+            virtualService:
+              enabled: false
+            operator:
+              enabled: false
+      destination:
+        name: in-cluster
+        namespace: hermes
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            app.kubernetes.io/part-of: bb-platform
+            infra.k8/tier: production
+            infra.k8/cluster: home
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

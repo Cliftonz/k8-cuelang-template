@@ -1,0 +1,57 @@
+name: Check Helm Immutable Fields
+
+# Render-diff guard: when a PR bumps a chart version in any cluster's
+# helmreleases.cue, render the chart at the base and head versions and fail
+# if the bump would change an IMMUTABLE Kubernetes field (RoleBinding
+# .roleRef, workload .spec.selector, PVC size/class, headless clusterIP).
+# Those changes make `helm upgrade` fail and wedge the provider-helm
+# Release in STATE=failed — this surfaces it at review time with the exact
+# `kubectl delete` remediation, instead of after a live apply.
+
+on:
+  pull_request:
+    paths:
+      - "composites/**/helmreleases.cue"
+      - "ci/scripts/check-helm-immutable.sh"
+      - ".github/workflows/check-helm-immutable.yml"
+  workflow_dispatch:
+    inputs:
+      cluster:
+        description: "Cluster to check"
+        default: "home"
+
+permissions:
+  contents: read
+
+jobs:
+  check-helm-immutable:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: v3.18.0
+
+      - name: Setup CUE
+        run: |
+          curl -fsSL "https://github.com/cue-lang/cue/releases/download/v0.16.1/cue_v0.16.1_linux_amd64.tar.gz" | tar -xz
+          sudo install -m 0755 cue /usr/local/bin/cue
+
+      - name: Setup yq
+        run: |
+          curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o yq
+          sudo install -m 0755 yq /usr/local/bin/yq
+
+      - name: Check immutable-field changes
+        env:
+          CLUSTER: ${{ github.event.inputs.cluster || 'home' }}
+          BASE_REF: origin/${{ github.base_ref }}
+        run: |
+          # workflow_dispatch has no base_ref; fall back to HEAD~1.
+          if [ -z "${{ github.base_ref }}" ]; then BASE_REF="HEAD~1"; fi
+          BASE_REF="$BASE_REF" bash ci/scripts/check-helm-immutable.sh "$CLUSTER"

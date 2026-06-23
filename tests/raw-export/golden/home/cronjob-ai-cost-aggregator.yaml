@@ -1,0 +1,155 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ai-cost-aggregator
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: 27 * * * *
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: ai-cost-aggregator
+          restartPolicy: Never
+          containers:
+            - name: aggregator
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+                  # alpine/k8s ships busybox `date` which lacks both
+                  # GNU `-d` and BSD `-v`. Add coreutils for GNU date.
+                  apk add --no-cache jq bc coreutils >/dev/null
+
+                  WEBHOOK="$(cat /run/discord/url)"
+                  [ -z "$WEBHOOK" ] && { echo "no webhook"; exit 0; }
+
+                  # Window: tasks completed within the last 65 minutes
+                  # (5-minute overlap to avoid edge gaps between cron ticks).
+                  CUTOFF_RFC=$(date -u -d '-65 minutes' +%Y-%m-%dT%H:%M:%SZ)
+
+                  # List Tasks that finished in the window. We use Tasks
+                  # (not pods) for the timestamp because pods get GC'd
+                  # faster than Tasks (TTL up to 7200s on most agents).
+                  TASKS_JSON=$(kubectl -n kelos-system get tasks.kelos.dev -o json)
+                  ROLES=$(echo "$TASKS_JSON" | jq -r --arg c "$CUTOFF_RFC" '
+                  	[ .items[]
+                  	  | select(.status.phase == "Succeeded" or .status.phase == "Failed")
+                  	  | select((.status.completionTime // "") >= $c)
+                  	  | { role: (.metadata.labels["kelos.dev/role"] // "unknown")
+                  	    , task: .metadata.name
+                  	    }
+                  	]' )
+
+                  TOTAL_TASKS=$(echo "$ROLES" | jq 'length')
+                  if [ "$TOTAL_TASKS" -eq 0 ]; then
+                  	echo "no completed Tasks in last 65min — skip Discord post"
+                  	exit 0
+                  fi
+
+                  # For each Task, read its pod log for cost-usd / input-tokens / output-tokens.
+                  # Pod logs may be evicted; skip silently when unreadable.
+                  ROWS_FILE=$(mktemp)
+                  # Pushgateway URL — same opencost-prometheus
+                  # helm release, pushgateway subchart now on.
+                  PGW="http://opencost-prometheus-prometheus-pushgateway.opencost.svc:9091"
+
+                  echo "$ROLES" | jq -c '.[]' | while read -r row; do
+                  	ROLE=$(echo "$row" | jq -r '.role')
+                  	TASK=$(echo "$row" | jq -r '.task')
+                  	POD=$(kubectl -n kelos-system get pods -l "kelos.dev/task=$TASK" -o name 2>/dev/null | head -1)
+                  	[ -z "$POD" ] && continue
+                  	LOG=$(kubectl -n kelos-system logs "$POD" --tail=20 2>/dev/null || true)
+                  	COST=$(echo "$LOG" | sed -n 's/^cost-usd: //p' | head -1)
+                  	INTOK=$(echo "$LOG" | sed -n 's/^input-tokens: //p' | head -1)
+                  	OUTTOK=$(echo "$LOG" | sed -n 's/^output-tokens: //p' | head -1)
+                  	[ -z "$COST" ] && continue
+                  	echo "$ROLE	$COST	${INTOK:-0}	${OUTTOK:-0}" >> "$ROWS_FILE"
+
+                  	# Push per-Task metric to Prometheus. Grouping
+                  	# key (task) makes each Task a separate entry
+                  	# in pushgateway storage; the same task name
+                  	# overwrites on a re-tick which is what we
+                  	# want (idempotent within the 65min window).
+                  	# URL-encode the role since it can contain '-'.
+                  	printf '# TYPE kelos_task_cost_usd gauge\nkelos_task_cost_usd %s\n# TYPE kelos_task_input_tokens gauge\nkelos_task_input_tokens %s\n# TYPE kelos_task_output_tokens gauge\nkelos_task_output_tokens %s\n' \
+                  		"$COST" "${INTOK:-0}" "${OUTTOK:-0}" \
+                  		| curl -sS --max-time 5 \
+                  		      --data-binary @- \
+                  		      "$PGW/metrics/job/kelos_cost/role/$ROLE/task/$TASK" \
+                  		      >/dev/null 2>&1 || \
+                  		      echo "pushgateway push failed for $TASK (non-fatal)"
+                  done
+
+                  if [ ! -s "$ROWS_FILE" ]; then
+                  	echo "no cost data in pod logs — skip"
+                  	exit 0
+                  fi
+
+                  # Aggregate by role. printf %.4f keeps ~tenth-of-a-cent precision.
+                  SUMMARY=$(awk -F'\t' '
+                  	{
+                  		roles[$1]++
+                  		cost[$1] += $2 + 0
+                  		intok[$1] += $3 + 0
+                  		outtok[$1] += $4 + 0
+                  	}
+                  	END {
+                  		for (r in roles)
+                  			printf "  %-30s %4d task(s)  $%7.4f  in=%6d  out=%6d\n",
+                  			       r, roles[r], cost[r], intok[r], outtok[r]
+                  	}
+                  ' "$ROWS_FILE" | sort)
+
+                  TOTAL_COST=$(awk -F'\t' '{s+=$2} END {printf "%.4f", s}' "$ROWS_FILE")
+                  TOTAL_IN=$( awk -F'\t' '{s+=$3} END {print s+0}' "$ROWS_FILE")
+                  TOTAL_OUT=$(awk -F'\t' '{s+=$4} END {print s+0}' "$ROWS_FILE")
+
+                  # Skip near-zero rounds entirely (under $0.01).
+                  SKIP=$(awk -v c="$TOTAL_COST" 'BEGIN { print (c < 0.01) ? "yes" : "no" }')
+                  if [ "$SKIP" = "yes" ]; then
+                  	echo "total $TOTAL_COST < \$0.01 — skip Discord post"
+                  	exit 0
+                  fi
+
+                  BODY=$(printf ':moneybag: AI cost (last 1h): **\\$%s** total — %s in / %s out tokens\n```\n%s```' \
+                  	"$TOTAL_COST" "$TOTAL_IN" "$TOTAL_OUT" "$SUMMARY")
+                  PAYLOAD=$(jq -n --arg c "$BODY" '{content: $c}')
+
+                  curl -sf -X POST -H 'Content-Type: application/json' -d "$PAYLOAD" "$WEBHOOK" >/dev/null \
+                  	&& echo "posted hourly cost summary ($TOTAL_COST USD)" \
+                  	|| echo "discord post failed"
+              volumeMounts:
+                - name: discord
+                  mountPath: /run/discord
+                  readOnly: true
+              resources:
+                requests:
+                  cpu: 20m
+                  memory: 64Mi
+                limits:
+                  cpu: 300m
+                  memory: 256Mi
+              securityContext:
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+          volumes:
+            - name: discord
+              secret:
+                secretName: discord-webhook

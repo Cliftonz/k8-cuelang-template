@@ -1,0 +1,79 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: homepage
+  namespace: homepage
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: homepage
+    repository: https://jameswynn.github.io/helm-charts
+    version: 2.1.0
+  values:
+    image:
+      repository: ghcr.io/gethomepage/homepage
+      tag: v1.12.3
+    env:
+      HOMEPAGE_ALLOWED_HOSTS: home.example.internal,homepage.homepage.svc.cluster.local
+    enableRbac: true
+    serviceAccount:
+      create: true
+    config:
+      kubernetes:
+        mode: cluster
+      services: []
+      bookmarks:
+        - NetBox:
+            - NetBox Cloud:
+                - abbr: NB
+                  href: https://your-netbox-tenant.cloud.netboxapp.com/
+            - NetBox Console:
+                - abbr: NL
+                  href: https://console.netboxlabs.com/
+      widgets:
+        - kubernetes:
+            cluster:
+              show: true
+              cpu: true
+              memory: true
+              showLabel: true
+              label: home
+            nodes:
+              show: true
+              cpu: true
+              memory: true
+              showLabel: true
+        - resources:
+            backend: kubernetes
+            expanded: true
+            cpu: true
+            memory: true
+      settings:
+        title: Home Cluster
+        theme: dark
+        color: slate
+        layout:
+          Smart Home:
+            style: row
+            columns: 4
+          Tools:
+            style: row
+            columns: 4
+          Dev:
+            style: row
+            columns: 4
+          Platform:
+            style: row
+            columns: 4
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi

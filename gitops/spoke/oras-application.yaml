@@ -1,0 +1,23 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: platform-oras
+  namespace: argocd
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/example-org/k8-infra.git
+    targetRevision: main
+    path: gitops/spoke/oci
+    plugin:
+      name: oras
+      env:
+        - name: OCI_REF
+          value: oci://registry.example.com/k8-infra/manifests@sha256:0000000000000000000000000000000000000000000000000000000000000000
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true

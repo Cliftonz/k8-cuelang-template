@@ -1,0 +1,42 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/namespace: traefik
+    gethomepage.dev/pod-selector: app.kubernetes.io/name=traefik
+    traefik.ingress.kubernetes.io/service.serversscheme: https
+    traefik.ingress.kubernetes.io/service.serverstransport: truenas-insecure-skip-verify@kubernetescrd
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: TrueNAS
+    gethomepage.dev/group: Platform
+    gethomepage.dev/icon: truenas.png
+    gethomepage.dev/description: NAS appliance UI
+    gethomepage.dev/href: https://truenas.example.internal
+    gethomepage.dev/siteMonitor: https://truenas.example.internal
+  name: truenas
+  namespace: truenas
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: truenas.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: truenas-backend
+                port:
+                  number: 443
+  tls:
+    - secretName: truenas-tls
+      hosts:
+        - truenas.example.internal

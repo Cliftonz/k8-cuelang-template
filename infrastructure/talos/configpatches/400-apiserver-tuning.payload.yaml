@@ -1,0 +1,53 @@
+# Talos ConfigPatch payload — kube-apiserver / controller-manager /
+# scheduler tuning for Crossplane-heavy clusters.
+#
+# Why this matters here:
+#   ~40 XRDs + ~20 Argo CD CRDs + Longhorn + etc. register near-simultaneously
+#   on first install. Default in-flight caps (400 read, 200 write) saturate
+#   and the apiserver OOMKilled-loops while controller-manager/scheduler
+#   lose leader election. The raised caps + bigger lease windows let the
+#   burst settle without churn.
+cluster:
+  apiServer:
+    extraArgs:
+      max-requests-inflight: "1500"
+      max-mutating-requests-inflight: "700"
+      watch-cache-sizes: "compositeresourcedefinitions.apiextensions.crossplane.io#500,releases.helm.crossplane.io#500"
+      request-timeout: "2m0s"
+    resources:
+      requests:
+        cpu: 200m
+        memory: 1Gi
+      limits:
+        cpu: "2"
+        memory: 4Gi
+
+  controllerManager:
+    extraArgs:
+      kube-api-qps: "100"
+      kube-api-burst: "150"
+      leader-elect-lease-duration: "60s"
+      leader-elect-renew-deadline: "40s"
+      leader-elect-retry-period: "5s"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: "1"
+        memory: 1Gi
+
+  scheduler:
+    extraArgs:
+      kube-api-qps: "100"
+      kube-api-burst: "150"
+      leader-elect-lease-duration: "60s"
+      leader-elect-renew-deadline: "40s"
+      leader-elect-retry-period: "5s"
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: "1"
+        memory: 512Mi

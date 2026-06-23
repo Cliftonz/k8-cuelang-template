@@ -1,0 +1,38 @@
+apiVersion: ops.crossplane.io/v1alpha1
+kind: CronOperation
+metadata:
+  name: dns-validation-scan
+spec:
+  schedule: "0 2 * * *"
+  concurrencyPolicy: Forbid
+  successfulHistoryLimit: 7
+  failedHistoryLimit: 5
+  operationTemplate:
+    spec:
+      mode: Pipeline
+      pipeline:
+        - step: fetch-pods
+          functionRef:
+            name: crossplane-contrib-function-extra-resources
+          input:
+            apiVersion: extra-resources.fn.crossplane.io/v1beta1
+            kind: Input
+            spec:
+              extraResources:
+                - kind: Pod
+                  into: pods
+                  apiVersion: v1
+                  type: Selector
+                  selector:
+                    matchLabels: {}
+        - step: validate-dns
+          functionRef:
+            name: function-dns-validator
+          input:
+            apiVersion: fn.myorg.io/v1beta1
+            kind: DnsValidationPolicy
+            spec:
+              excludePatterns:
+                - ".*\\.svc\\.cluster\\.local$"
+                - "^localhost$"
+                - "^127\\.0\\.0\\.1$"

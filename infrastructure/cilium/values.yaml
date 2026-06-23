@@ -1,0 +1,179 @@
+# Cilium Helm values tuned for Talos Linux.
+#
+# Talos specifics handled here:
+#   - cgroup mounts: Talos pre-mounts cgroupv2 at /sys/fs/cgroup; tell
+#     Cilium not to auto-mount and point it at the existing root.
+#   - kernel modules: Talos forbids workloads loading modules — drop
+#     SYS_MODULE capability (default capability set excludes it already).
+#   - api server reachability: KubePrism exposes the kube-apiserver on
+#     127.0.0.1:7445 from every node, so Cilium doesn't need a kube-proxy
+#     hop or external LB to reach control plane.
+#   - kube-proxy replacement: full eBPF replacement, paired with the
+#     ConfigPatch in infrastructure/talos/cilium-cni-patch.yaml.
+#   - bpf.masquerade=false to avoid the documented CoreDNS conflict
+#     when Talos's forwardKubeDNSToHost=true is also on (it is, by
+#     default). Trade-off: pod→external traffic uses iptables masquerade
+#     instead of eBPF. Re-enable once forwardKubeDNSToHost=false is set.
+#
+# Reference: https://docs.siderolabs.com/kubernetes-guides/cni/deploying-cilium
+
+ipam:
+  mode: kubernetes
+
+# Restrict Cilium to the primary NIC only. Without this, Cilium auto-
+# detects every interface that looks routable — including the leftover
+# `flannel.1` VXLAN device on a cluster migrated from Flannel. Flannel.1
+# survives the CNI swap (Talos doesn't garbage-collect it), keeps its
+# pre-migration PERMANENT ARP entries (pointing at MAC addresses of
+# now-deleted Flannel pods), and Cilium silently includes it in BPF
+# masquerading + L3 forwarding. Net result: host-network traffic on
+# the control-plane node loses ~50% of packets to dead VXLAN endpoints
+# and admission webhooks backed by worker-node pods time out from the
+# apiserver. Pinning devices to `eth0` avoids the trap. If a node has
+# multiple physical NICs they should be added here explicitly.
+devices: eth0
+
+# Talos-friendly cgroup mount.
+cgroup:
+  autoMount:
+    enabled: false
+  hostRoot: /sys/fs/cgroup
+
+# Replace kube-proxy with eBPF. Requires `cluster.proxy.disabled: true`
+# in the Talos machine config (see cilium-cni-patch.yaml).
+kubeProxyReplacement: true
+k8sServiceHost: localhost
+k8sServicePort: 7445
+
+# Allow standard Kubernetes NetworkPolicy `ipBlock: 0.0.0.0/0` egress
+# rules to also match node IPs — without this, Cilium classifies node
+# IPs under the `remote-node` identity which a CIDR rule does NOT
+# match by default. With kube-proxy replacement, pod→apiserver traffic
+# gets socket-LB-rewritten from the kubernetes Service VIP (10.96.0.1)
+# to the control-plane node IP (e.g. 192.168.1.x:6443), so without
+# this flag every default-deny+allow-egress-to-0.0.0.0/0 NetworkPolicy
+# silently breaks pod→apiserver after migrating off Flannel.
+policyCIDRMatchMode:
+  - nodes
+
+# eBPF datapath options.
+bpf:
+  # bpf.masquerade=true is required for "Host: BPF" routing — without it
+  # Cilium falls back to "Host: Legacy" (kernel routing tables), which on
+  # this cluster left host-network processes (notably kube-apiserver) unable
+  # to reach pods on other nodes. Symptom: every webhook backed by a
+  # Deployment that doesn't run on the control-plane node (e.g. Longhorn's
+  # admission webhook) times out from the apiserver, blocking volume
+  # operations. Discovered during the Flannel→Cilium migration on
+  # talos-home (2026-05-06): apiserver→worker-pod ping fails 100%, while
+  # apiserver→same-node-pod works (cilium_host loopback). Flipping to
+  # masquerade=true enables BPF host routing and fixes the host-net path.
+  #
+  # Documented Talos conflict: Talos's machine.features.kubernetesTalosAPIAccess
+  # interaction with kube-dns forwarding. Talos-1.7+ defaults handle this
+  # cleanly under bpf.masquerade=true; older clusters needed forwardKubeDNSToHost
+  # disabled. If CoreDNS resolution flaps after enabling this, set the Talos
+  # patch in infrastructure/talos/cilium-cni-patch.yaml to add
+  # cluster.network.podSubnets / forwardKubeDNSToHost=false.
+  masquerade: true
+
+# Capabilities: explicit list per Cilium docs for Talos. Notably
+# omits SYS_MODULE — Talos blocks runtime module loading.
+securityContext:
+  capabilities:
+    ciliumAgent:
+      - CHOWN
+      - KILL
+      - NET_ADMIN
+      - NET_RAW
+      - IPC_LOCK
+      - SYS_ADMIN
+      - SYS_RESOURCE
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    cleanCiliumState:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - SYS_RESOURCE
+
+# Hubble — built-in observability. Agent collects flow data on every
+# node; relay aggregates across nodes; ui presents a browser dashboard
+# at hubble.example.internal (Ingress in composites/home/ingresses.cue).
+# Total cost ~120 MiB RAM cluster-wide (relay + UI frontend + UI
+# backend). LAN-only access via Traefik-internal; no auth gating today
+# — wrap behind oauth2-proxy when Dex lands.
+hubble:
+  enabled: true
+  relay:
+    enabled: true
+    resources:
+      requests: {cpu: 50m, memory: 64Mi}
+      limits:   {cpu: 200m, memory: 128Mi}
+  ui:
+    enabled: true
+    frontend:
+      resources:
+        requests: {cpu: 20m, memory: 32Mi}
+        limits:   {cpu: 100m, memory: 64Mi}
+    backend:
+      resources:
+        requests: {cpu: 20m, memory: 32Mi}
+        limits:   {cpu: 100m, memory: 64Mi}
+
+# IPv4 only on home networks.
+ipv4:
+  enabled: true
+ipv6:
+  enabled: false
+
+# Resource shape — Cilium agent runs on every node. Bumped from
+# 512Mi to 1Gi after a death-spiral incident on 2026-05-20: agents
+# weren't OOMing on the cgroup limit per se, but the /healthz
+# liveness probe (5s timeout) was timing out when the agent was
+# busy reloading BPF programs after pod churn. Kubelet SIGKILLed
+# the agent, all pods on the node lost networking during the agent
+# rebuild, new pod scheduling backed up, agent rebuild slowed
+# further → infinite restart loop. Per-node agent restart counts
+# hit 75-135. Larger memory cushion + the longer probe windows
+# below remove the kill path even on a busy node.
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 2
+    memory: 1Gi
+
+# Liveness/readiness probe tuning. Cilium's default 5s probe timeout
+# is too tight for `/healthz` during BPF program reloads on heavily
+# churning nodes (10+ pod creates/deletes per minute). The agent
+# itself recovers fine — it's the kubelet kill that turns slow into
+# fatal. Widen the timeout + failure threshold so a momentarily-busy
+# agent isn't murdered.
+#
+# This block maps to Helm chart fields `livenessProbe`,
+# `readinessProbe`, `startupProbe` (Cilium chart 1.19+).
+livenessProbe:
+  timeoutSeconds: 30
+  failureThreshold: 5
+  periodSeconds: 30
+readinessProbe:
+  timeoutSeconds: 10
+  failureThreshold: 5
+  periodSeconds: 30
+startupProbe:
+  timeoutSeconds: 5
+  failureThreshold: 300
+  periodSeconds: 2
+
+operator:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

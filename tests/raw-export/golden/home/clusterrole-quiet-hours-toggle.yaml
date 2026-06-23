@@ -1,0 +1,33 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: quiet-hours-toggle
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+rules:
+  - apiGroups:
+      - kelos.dev
+    resources:
+      - taskspawners
+    verbs:
+      - get
+      - list
+      - patch
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - sensors
+    verbs:
+      - get
+      - list
+      - patch
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - get

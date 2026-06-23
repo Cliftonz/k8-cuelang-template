@@ -1,0 +1,28 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: cnpg
+  namespace: cnpg-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: cloudnative-pg
+    repository: https://cloudnative-pg.github.io/charts
+    version: 0.28.3
+  values:
+    crds:
+      create: true
+    image:
+      repository: ghcr.io/cloudnative-pg/cloudnative-pg
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi

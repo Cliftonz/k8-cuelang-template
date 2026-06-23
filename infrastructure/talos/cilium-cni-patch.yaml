@@ -1,0 +1,38 @@
+# Talos ConfigPatch — disables Talos's default CNI (Flannel) and kube-proxy
+# so Cilium can take over both the CNI plane and kube-proxy replacement.
+#
+# Apply via Omni:
+#
+#   omnictl apply -f infrastructure/talos/cilium-cni-patch.yaml
+#
+# Or via talosctl on a fresh (non-Omni) cluster:
+#
+#   talosctl patch mc --patch @infrastructure/talos/cilium-cni-patch.yaml
+#
+# Apply this BEFORE bootstrapping the cluster — once the cluster is up and
+# running with the default CNI, switching mid-flight is disruptive (CNI
+# state in /var/lib/cni, kube-proxy iptables rules, etc.).
+#
+# After Talos boots with this patch:
+#   1. nodes will be NotReady (no CNI installed yet)
+#   2. apiserver will be reachable on 127.0.0.1:7445 via KubePrism
+#   3. run infrastructure/cilium/install.sh to deploy Cilium
+#   4. nodes flip to Ready ~30s after Cilium DaemonSet schedules
+#
+# Reference: https://docs.siderolabs.com/kubernetes-guides/cni/deploying-cilium
+apiVersion: omni.sidero.dev/v1alpha1
+kind: ConfigPatch
+metadata:
+  name: cilium-cni
+  labels:
+    omni.sidero.dev/cluster: ""  # set on apply: --label omni.sidero.dev/cluster=<name>
+spec:
+  data: |
+    cluster:
+      network:
+        cni:
+          name: none
+      # kube-proxy replaced by Cilium's eBPF implementation. Set to false
+      # to keep stock kube-proxy + Cilium in chained mode (less common).
+      proxy:
+        disabled: true

@@ -1,0 +1,49 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: bb-platform
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  description: Example Org platform charts shipped from ghcr.io/example-org/charts and vendored charts in github.com/example-org/k8-infra
+  destinations:
+    - namespace: jarvy-telemetry
+      server: https://kubernetes.default.svc
+    - namespace: hermes
+      server: https://kubernetes.default.svc
+    - namespace: honcho
+      server: https://kubernetes.default.svc
+    - namespace: velero
+      server: https://kubernetes.default.svc
+  sourceRepos:
+    - ghcr.io/example-org/charts
+    - ghcr.io/example-org/charts/*
+    - https://github.com/example-org/k8-infra.git
+    - https://github.com/example-org/k8-infra
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: apiextensions.k8s.io
+      kind: CustomResourceDefinition
+  namespaceResourceWhitelist:
+    - group: ""
+      kind: '*'
+    - group: apps
+      kind: '*'
+    - group: networking.k8s.io
+      kind: '*'
+    - group: autoscaling
+      kind: '*'
+    - group: policy
+      kind: '*'
+    - group: external-secrets.io
+      kind: '*'
+    - group: monitoring.coreos.com
+      kind: '*'
+    - group: traefik.io
+      kind: '*'

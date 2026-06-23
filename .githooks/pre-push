@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Versioned pre-push hook. Enable with: make install-hooks
+# Bypass once with: SKIP_PREPUSH=1 git push
+set -euo pipefail
+
+if [ -n "${SKIP_PREPUSH:-}" ]; then
+  echo "[pre-push] SKIP_PREPUSH set — skipping CI/publish checks"
+  exit 0
+fi
+
+exec "$(git rev-parse --show-toplevel)/ci/scripts/pre-push-check.sh"

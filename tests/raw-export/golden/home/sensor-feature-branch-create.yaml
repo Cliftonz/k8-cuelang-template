@@ -1,0 +1,111 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-branch-create
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: feature-labeled
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - labeled
+          - path: body.label.name
+            type: string
+            value:
+              - ai-feature
+          - path: body.issue.number
+            type: number
+            comparator: '>'
+            value:
+              - "0"
+          - path: body.repository.full_name
+            type: string
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: create-feature-branch
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                name: PLACEHOLDER_NAME
+                namespace: argo-events
+              spec:
+                template:
+                  spec:
+                    serviceAccountName: argo-events-sa
+                    restartPolicy: Never
+                    containers:
+                      - name: create
+                        image: maniator/gh:v2.62.0
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: REPO
+                            value: PLACEHOLDER_REPO
+                          - name: ISSUE_NUMBER
+                            value: PLACEHOLDER_ISSUE
+                          - name: ISSUE_TITLE
+                            value: PLACEHOLDER_TITLE
+                          - name: BRANCH_CREATED_LABEL
+                            value: branch-created
+                          - name: AI_IMPLEMENT_LABEL
+                            value: ready:ai-implement
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 10m
+                            memory: 32Mi
+                          limits:
+                            cpu: 100m
+                            memory: 128Mi
+                backoffLimit: 1
+                ttlSecondsAfterFinished: 300
+          parameters:
+            - src:
+                dependencyName: feature-labeled
+                dataTemplate: feature-branch-create-issue-{{ .Input.body.issue.number }}
+              dest: metadata.name
+            - src:
+                dependencyName: feature-labeled
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.0.value
+            - src:
+                dependencyName: feature-labeled
+                dataKey: body.issue.number
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: feature-labeled
+                dataKey: body.issue.title
+              dest: spec.template.spec.containers.0.env.2.value
+            - src:
+                dependencyName: feature-labeled
+                dataTemplate: |-
+                  set -eu
+                  apk add --no-cache git bash >/dev/null 2>&1 || true
+                  git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/example-org/k8-infra.git" /tmp/infra
+                  exec bash /tmp/infra/ci/scripts/feature-branch-create.sh
+              dest: spec.template.spec.containers.0.command.2

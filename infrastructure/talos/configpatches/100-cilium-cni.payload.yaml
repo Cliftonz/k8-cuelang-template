@@ -1,0 +1,12 @@
+# Talos ConfigPatch payload — disable default CNI (Flannel) and kube-proxy
+# so Cilium can own both. Applied before bootstrap; switching mid-flight is
+# disruptive (CNI state in /var/lib/cni, kube-proxy iptables rules, etc.).
+#
+# This payload is wrapped in an Omni ConfigPatch envelope by
+# ci/scripts/apply-omni-patches.sh.
+cluster:
+  network:
+    cni:
+      name: none
+  proxy:
+    disabled: true

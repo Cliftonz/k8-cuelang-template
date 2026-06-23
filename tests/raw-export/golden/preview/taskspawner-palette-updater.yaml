@@ -1,0 +1,50 @@
+apiVersion: kelos.dev/v1alpha1
+kind: TaskSpawner
+metadata:
+  name: palette-updater
+  namespace: kelos-system
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  maxConcurrency: 1
+  pollInterval: 1m
+  when:
+    githubPullRequests:
+      state: open
+      commentPolicy:
+        triggerComment: /update-palette
+        minimumPermission: write
+  taskTemplate:
+    type: claude-code
+    workspaceRef:
+      name: k8-infra
+    credentials:
+      type: oauth
+      secretRef:
+        name: claude-code-oauth
+    agentConfigRef:
+      name: palette-updater
+    podOverrides:
+      env:
+        - name: GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-pat
+              key: GITHUB_TOKEN
+    promptTemplate: |-
+      A /update-palette comment was posted on PR #{{.Number}}
+      ({{.Title}}) on branch {{.Branch}}.
+
+      Derive the repo from the PR URL or use gh to determine it.
+
+      Follow your AgentConfig instructions:
+      1. Read all comments on PR #{{.Number}}
+      2. Find the <!-- kelos-palette --> comment
+      3. Aggregate /update-palette statuses (most recent per agent type)
+      4. PATCH the palette comment with the rendered table
+      5. Stop.
+    ttlSecondsAfterFinished: 600

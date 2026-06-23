@@ -1,0 +1,89 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: cert-manager
+    repository: https://charts.jetstack.io
+    version: v1.20.2
+  values:
+    crds:
+      enabled: true
+    extraArgs:
+      - --dns01-recursive-nameservers=1.1.1.1:53,8.8.8.8:53
+      - --dns01-recursive-nameservers-only
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi
+    webhook:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 64Mi
+        limits:
+          cpu: 200m
+          memory: 128Mi
+    cainjector:
+      resources:
+        requests:
+          cpu: 20m
+          memory: 128Mi
+        limits:
+          cpu: 200m
+          memory: 256Mi
+    startupapicheck:
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+    extraObjects:
+      - |
+        apiVersion: cert-manager.io/v1
+        kind: ClusterIssuer
+        metadata:
+          name: openbao-example-internal
+        spec:
+          vault:
+            server: http://openbao.openbao.svc:8200
+            path: pki_int/sign/example-internal
+            auth:
+              kubernetes:
+                mountPath: /v1/auth/kubernetes
+                role: cert-manager
+                serviceAccountRef:
+                  name: cert-manager
+      - |
+        apiVersion: cert-manager.io/v1
+        kind: ClusterIssuer
+        metadata:
+          name: letsencrypt-example-public
+        spec:
+          acme:
+            server: https://acme-v02.api.letsencrypt.org/directory
+            email: admin@example.com
+            privateKeySecretRef:
+              name: letsencrypt-example-public-account
+            solvers:
+              - selector:
+                  dnsZones:
+                    - example.com
+                dns01:
+                  cloudflare:
+                    apiTokenSecretRef:
+                      name: cloudflare-api-token
+                      key: api_token

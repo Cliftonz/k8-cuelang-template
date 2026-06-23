@@ -1,0 +1,101 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: preview-cap-watchdog
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  schedule: '*/15 * * * *'
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: watchdog
+              image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+              env:
+                - name: PREVIEW_CAP
+                  value: "6"
+                - name: PREVIEW_REPOS
+                  value: example-org/SalesSage
+              command:
+                - /bin/sh
+                - -c
+                - |-
+                  set -eu
+                  apk add --no-cache jq >/dev/null
+
+                  TOKEN=$(cat /run/github-token/token)
+                  if [ -z "$TOKEN" ]; then
+                    echo "no github token mounted; exiting" >&2
+                    exit 1
+                  fi
+
+                  # Aggregate open `preview`-labeled PRs across repos,
+                  # sorted globally by updated_at desc.
+                  all=$(
+                    for repo in $PREVIEW_REPOS; do
+                      curl -sfS \
+                        -H "Authorization: token $TOKEN" \
+                        -H "Accept: application/vnd.github+json" \
+                        "https://api.github.com/repos/$repo/issues?state=open&labels=preview&per_page=100" \
+                      | jq --arg repo "$repo" '[.[] | select(.pull_request) | {repo:$repo, number, updated_at, title}]'
+                    done | jq -s '[.[][]] | sort_by(.updated_at) | reverse'
+                  )
+
+                  count=$(echo "$all" | jq 'length')
+                  echo "watchdog: $count active previews across [$PREVIEW_REPOS], cap=$PREVIEW_CAP"
+                  if [ "$count" -le "$PREVIEW_CAP" ]; then
+                    exit 0
+                  fi
+
+                  echo "watchdog: pruning $((count - PREVIEW_CAP)) preview(s) over cap"
+                  echo "$all" | jq -r ".[${PREVIEW_CAP}:][] | \"\(.repo) \(.number) \(.title)\"" \
+                  | while read repo num title; do
+                    echo "  removing 'preview' label: $repo PR#$num — $title"
+                    if ! curl -sfS -X DELETE \
+                        -H "Authorization: token $TOKEN" \
+                        -H "Accept: application/vnd.github+json" \
+                        "https://api.github.com/repos/$repo/issues/$num/labels/preview" \
+                        -o /tmp/resp.json; then
+                      rc=$?
+                      if grep -q '"Label does not exist"' /tmp/resp.json 2>/dev/null; then
+                        echo "    (label already absent — ok)"
+                      else
+                        echo "    DELETE failed (rc=$rc): $(cat /tmp/resp.json)" >&2
+                      fi
+                    fi
+                  done
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 64Mi
+                limits:
+                  cpu: 200m
+                  memory: 128Mi
+              volumeMounts:
+                - name: github-token
+                  mountPath: /run/github-token
+                  readOnly: true
+              securityContext:
+                runAsNonRoot: false
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                seccompProfile:
+                  type: RuntimeDefault
+                readOnlyRootFilesystem: false
+          volumes:
+            - name: github-token
+              secret:
+                secretName: github-app-token

@@ -1,0 +1,89 @@
+# Cloudflare zone-level Rulesets for the jarvy-telemetry public OTLP
+# endpoint (jarvyotel.example.com). Two rulesets — Cloudflare's
+# modern API has at most ONE ruleset per (zone, phase):
+#
+#   1. http_request_firewall_custom — WAF block for anything outside
+#      POST /v1/{logs,metrics,traces}. Crawlers + scanners + accidental
+#      browser visits 403 at the edge before bytes reach the cluster.
+#
+#   2. http_ratelimit — 60 req/min/IP, 10-min mitigation. Mirrors the
+#      in-cluster Traefik middleware (Tier 2). Tier 1 (this) blocks
+#      cheaply at CF's edge; Tier 2 catches anything that slips a
+#      misconfigured CF rule.
+#
+# Zone ID + Account ID resolved from the Cloudflare API (see comment
+# below for the lookup command). Hardcoded because the wildbitca
+# provider doesn't ship a Zone import resource.
+#
+# Bot Fight Mode toggle is NOT exposed by this provider — flip it
+# manually in Cloudflare dashboard → example.com → Security → Bots.
+#
+# Lookup commands (if zone/account IDs ever change):
+#   TOKEN=$(kubectl get secret cloudflare-provider-creds -n crossplane-system \
+#     -o jsonpath='{.data.credentials}' | base64 -d | jq -r '.api_token')
+#   curl -sS -H "Authorization: Bearer $TOKEN" \
+#     "https://api.cloudflare.com/client/v4/zones?name=example.com" \
+#     | jq -r '.result[0] | "zone=\(.id) account=\(.account.id)"'
+
+---
+apiVersion: cloudflare.upjet-cloudflare.upbound.io/v1alpha1
+kind: Ruleset
+metadata:
+  name: jarvy-telemetry-waf-custom
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: jarvy-telemetry
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  forProvider:
+    zoneId: fedcba9876543210fedcba9876543210
+    name: jarvy-telemetry WAF custom
+    description: Block non-OTLP traffic to jarvyotel.example.com at the edge
+    kind: zone
+    phase: http_request_firewall_custom
+    rules:
+      - action: block
+        description: Block anything that isn't POST /v1/{logs,metrics,traces}
+        expression: |
+          (http.host eq "jarvyotel.example.com") and not (
+            http.request.method eq "POST" and (
+              starts_with(http.request.uri.path, "/v1/logs") or
+              starts_with(http.request.uri.path, "/v1/metrics") or
+              starts_with(http.request.uri.path, "/v1/traces")
+            )
+          )
+        enabled: true
+  providerConfigRef:
+    name: default
+---
+apiVersion: cloudflare.upjet-cloudflare.upbound.io/v1alpha1
+kind: Ruleset
+metadata:
+  name: jarvy-telemetry-ratelimit
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: jarvy-telemetry
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  forProvider:
+    zoneId: fedcba9876543210fedcba9876543210
+    name: jarvy-telemetry rate limit
+    description: Per-IP rate limit on jarvyotel.example.com
+    kind: zone
+    phase: http_ratelimit
+    rules:
+      - action: block
+        description: 60 req/min/IP, 10-min mitigation
+        expression: (http.host eq "jarvyotel.example.com")
+        enabled: true
+        ratelimit:
+          characteristics: ["ip.src"]
+          period: 60                      # seconds
+          requestsPerPeriod: 60
+          mitigationTimeout: 600          # 10 min in seconds
+  providerConfigRef:
+    name: default

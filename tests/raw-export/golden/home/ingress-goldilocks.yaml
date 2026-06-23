@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: Goldilocks
+    gethomepage.dev/group: Platform
+    gethomepage.dev/icon: kubernetes.png
+    gethomepage.dev/description: VPA recommendations dashboard
+    gethomepage.dev/href: http://goldilocks.example.internal
+    gethomepage.dev/siteMonitor: http://goldilocks.example.internal
+    gethomepage.dev/pod-selector: app.kubernetes.io/component=dashboard
+    traefik.ingress.kubernetes.io/router.middlewares: oauth-proxy-auth-with-redirect@kubernetescrd
+  name: goldilocks
+  namespace: goldilocks
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: goldilocks.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: goldilocks-dashboard
+                port:
+                  number: 80
+  tls:
+    - secretName: goldilocks-tls
+      hosts:
+        - goldilocks.example.internal

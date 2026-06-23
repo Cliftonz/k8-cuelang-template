@@ -1,0 +1,38 @@
+apiVersion: helm.crossplane.io/v1beta1
+kind: Release
+metadata:
+  name: headlamp
+spec:
+  providerConfigRef:
+    name: in-cluster
+  rollbackLimit: 3
+  forProvider:
+    chart:
+      name: headlamp
+      repository: https://kubernetes-sigs.github.io/headlamp/
+      version: "0.40.0"
+    namespace: headlamp
+    values:
+      # Headlamp in-cluster deployment with plugins.
+      # Deployed to the "headlamp" namespace — NOT kube-system.
+
+      replicaCount: 1
+
+      config:
+        pluginsDir: /build/plugins
+        watchPlugins: true
+
+      pluginsManager:
+        enabled: false
+
+      service:
+        type: ClusterIP
+        port: 80
+
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 256Mi

@@ -1,0 +1,47 @@
+# Additive cluster-wide allowance for pod->kube-apiserver egress.
+#
+# Why this exists:
+#   With Cilium kube-proxy replacement, traffic from any pod to the
+#   kubernetes Service VIP (10.96.0.1:443) is socket-LB-rewritten in
+#   eBPF to the actual control-plane node IP (e.g. 192.168.1.x:6443).
+#   That destination has Cilium's reserved `kube-apiserver` identity,
+#   which standard Kubernetes NetworkPolicy `ipBlock: 0.0.0.0/0` rules
+#   do NOT match — even with `policyCIDRMatchMode: nodes` set, since
+#   that mode covers `host`/`remote-node` identities, not the special
+#   `kube-apiserver` one.
+#
+#   Pre-Cilium, Flannel didn't enforce NetworkPolicy at all, so any
+#   namespace with a default-deny + allow-443-to-0.0.0.0/0 NP appeared
+#   to allow apiserver traffic (because *no* NP was actually enforced).
+#   After the CNI migration, that same policy silently breaks every
+#   pod that talks to the apiserver: ESO, cert-manager, kelos, ArgoCD,
+#   Crossplane providers, etc.
+#
+#   This CCNP grants egress to the `kube-apiserver` entity for every
+#   pod, additively (`enableDefaultDeny: false` so it does NOT make
+#   previously-unselected pods become "isolated" for either ingress
+#   or egress). Per-namespace policies still control everything else;
+#   this only restores the implicit apiserver access that pods enjoyed
+#   pre-migration.
+#
+#   Apply BEFORE deleting kube-flannel + kube-proxy DaemonSets.
+apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-egress-to-kube-apiserver
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+spec:
+  description: |
+    Allow every pod to reach the kube-apiserver. Required because
+    Cilium kube-proxy replacement socket-LB rewrites Service VIP to
+    the apiserver's reserved `kube-apiserver` identity, which is not
+    matched by ipBlock 0.0.0.0/0 in stock NetworkPolicy.
+  enableDefaultDeny:
+    egress: false
+    ingress: false
+  endpointSelector: {}
+  egress:
+    - toEntities:
+        - kube-apiserver

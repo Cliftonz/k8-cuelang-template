@@ -1,0 +1,47 @@
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: probes-require-startup-probe
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+spec:
+  validationFailureAction: Audit
+  validationFailureActionOverrides:
+    - action: Enforce
+      namespaceSelector:
+        matchExpressions:
+          - key: infra.k8/tier
+            operator: In
+            values:
+              - staging
+              - production
+  background: true
+  rules:
+    - name: require-startup-probe-when-liveness-is-early
+      match:
+        resources:
+          kinds:
+            - Pod
+      exclude:
+        resources:
+          namespaces:
+            - kube-system
+            - kyverno
+      validate:
+        message: "Add a startupProbe or increase liveness initialDelaySeconds for slow-starting apps."
+        foreach:
+          - list: "request.object.spec.containers"
+            preconditions:
+              all:
+                - key: "{{ element.livenessProbe }}"
+                  operator: NotEquals
+                  value: null
+                - key: "{{ element.startupProbe }}"
+                  operator: Equals
+                  value: null
+            deny:
+              conditions:
+                all:
+                  - key: "{{ element.livenessProbe.initialDelaySeconds || 0 }}"
+                    operator: LessThan
+                    value: 30

@@ -1,0 +1,35 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: cloudflare-tunnel-ingress-controller
+  namespace: cloudflared
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: dev
+    infra.k8/cluster: preview
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: cloudflare-tunnel-ingress-controller
+    repository: https://helm.strrl.dev
+    version: 0.0.15
+  values:
+    replicaCount: 1
+    cloudflare:
+      secretRef:
+        name: cloudflare-external-secret
+        accountIDKey: account_id
+        tunnelNameKey: tunnel_name
+        apiTokenKey: api_token
+    ingressClass:
+      name: cloudflare-tunnel
+      controllerValue: strrl.dev/cloudflare-tunnel-ingress-controller
+      isDefaultClass: false
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi

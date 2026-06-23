@@ -1,0 +1,248 @@
+apiVersion: k8-infra/raw-fallback/v1alpha1
+kind: HelmRenderRequest
+metadata:
+  name: traefik
+  namespace: traefik
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  chart:
+    name: traefik
+    repository: https://traefik.github.io/charts
+    version: 33.2.1
+  values:
+    deployment:
+      replicas: 1
+    service:
+      type: LoadBalancer
+      annotations:
+        metallb.universe.tf/address-pool: lan-dmz
+        metallb.universe.tf/loadBalancerIPs: 192.168.2.240
+    api:
+      dashboard: true
+      insecure: true
+    logs:
+      general:
+        level: INFO
+      access:
+        enabled: true
+        format: json
+        fields:
+          general:
+            defaultmode: keep
+            names:
+              ClientUsername: drop
+          headers:
+            defaultmode: drop
+            names:
+              Host: keep
+              X-Forwarded-Host: keep
+              X-Forwarded-Proto: keep
+              X-Forwarded-For: keep
+              X-Real-Ip: keep
+              Cf-Connecting-Ip: keep
+              Cf-Ipcountry: keep
+              Cf-Ray: keep
+              Location: keep
+              Referer: keep
+              User-Agent: keep
+    tracing:
+      sampleRate: 1.0
+      capturedRequestHeaders:
+        - Host
+        - X-Forwarded-Host
+        - X-Forwarded-Proto
+        - X-Forwarded-For
+        - Cf-Connecting-Ip
+        - Cf-Ipcountry
+        - Cf-Ray
+        - Referer
+        - User-Agent
+      capturedResponseHeaders:
+        - Location
+        - Content-Type
+      otlp:
+        enabled: true
+        http:
+          enabled: true
+          endpoint: http://jarvy-telemetry-jarvy-telemetry-forwarder.jarvy-telemetry.svc.cluster.local:4318/v1/traces
+    ingressRoute:
+      dashboard:
+        enabled: true
+    ports:
+      traefik:
+        expose:
+          default: true
+      web:
+        forwardedHeaders:
+          trustedIPs:
+            - 192.168.2.0/24
+            - 192.168.1.0/24
+        redirectTo:
+          port: websecure
+          priority: 1000
+      websecure:
+        forwardedHeaders:
+          trustedIPs:
+            - 192.168.2.0/24
+            - 192.168.1.0/24
+    extraObjects:
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: traefik-internal
+          namespace: traefik
+          annotations:
+            metallb.universe.tf/address-pool: lan-internal
+            metallb.universe.tf/loadBalancerIPs: 192.168.1.235
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          type: LoadBalancer
+          selector:
+            app.kubernetes.io/instance: traefik-traefik
+            app.kubernetes.io/name: traefik
+          ports:
+            - name: web
+              port: 80
+              targetPort: web
+              protocol: TCP
+            - name: websecure
+              port: 443
+              targetPort: websecure
+              protocol: TCP
+      - apiVersion: v1
+        kind: Service
+        metadata:
+          name: traefik-dashboard
+          namespace: traefik
+          annotations:
+            omni-kube-service-exposer.sidero.dev/port: "50083"
+            omni-kube-service-exposer.sidero.dev/label: Traefik (home)
+            omni-kube-service-exposer.sidero.dev/prefix: traefikhome
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          type: ClusterIP
+          selector:
+            app.kubernetes.io/instance: traefik-traefik
+            app.kubernetes.io/name: traefik
+          ports:
+            - name: traefik
+              port: 8080
+              targetPort: 8080
+              protocol: TCP
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: dashboard-root-redirect
+          namespace: traefik
+        spec:
+          redirectRegex:
+            regex: ^(https?://[^/]+)/?$
+            replacement: ${1}/dashboard/
+            permanent: false
+      - apiVersion: traefik.io/v1alpha1
+        kind: IngressRoute
+        metadata:
+          name: dashboard-root
+          namespace: traefik
+        spec:
+          entryPoints:
+            - traefik
+          routes:
+            - match: PathPrefix(`/`) && !PathPrefix(`/dashboard`) && !PathPrefix(`/api`)
+              kind: Rule
+              services:
+                - name: api@internal
+                  kind: TraefikService
+              middlewares:
+                - name: dashboard-root-redirect
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: html-cache
+          namespace: homepage
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          headers:
+            customResponseHeaders:
+              Cache-Control: public, max-age=300, must-revalidate
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: strip-xff
+          namespace: home-assistant
+          labels:
+            app.kubernetes.io/managed-by: k8-infra
+            app.kubernetes.io/part-of: platform
+        spec:
+          headers:
+            customRequestHeaders:
+              X-Forwarded-For: ""
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: jarvy-telemetry-ratelimit
+          namespace: jarvy-telemetry
+        spec:
+          rateLimit:
+            average: 60
+            burst: 30
+            period: 1m
+            sourceCriterion:
+              requestHeaderName: Cf-Connecting-Ip
+      - apiVersion: traefik.io/v1alpha1
+        kind: Middleware
+        metadata:
+          name: jarvy-telemetry-bodylimit
+          namespace: jarvy-telemetry
+        spec:
+          buffering:
+            maxRequestBodyBytes: 65536
+            memRequestBodyBytes: 65536
+      - apiVersion: traefik.io/v1alpha1
+        kind: IngressRoute
+        metadata:
+          name: jarvy-telemetry-otlp
+          namespace: jarvy-telemetry
+        spec:
+          entryPoints:
+            - web
+          routes:
+            - match: (Host(`jarvyotel.example.com`) || Host(`telemetry.jarvy.dev`)) && Method(`POST`) && (PathPrefix(`/v1/logs`) || PathPrefix(`/v1/metrics`) || PathPrefix(`/v1/traces`))
+              kind: Rule
+              priority: 2000
+              middlewares:
+                - name: jarvy-telemetry-bodylimit
+                - name: jarvy-telemetry-ratelimit
+              services:
+                - name: jarvy-telemetry-jarvy-telemetry-forwarder
+                  port: 4318
+    ingressClass:
+      enabled: true
+      isDefaultClass: true
+    providers:
+      kubernetesIngress:
+        allowExternalNameServices: true
+        allowEmptyServices: true
+        allowCrossNamespace: true
+      kubernetesCRD:
+        allowCrossNamespace: true
+      kubernetesGateway:
+        enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi

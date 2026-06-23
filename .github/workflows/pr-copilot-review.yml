@@ -1,0 +1,59 @@
+name: Copilot PR Security Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  copilot-pr-review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    env:
+      # jarvy isn't installed on the runner; bypass the Makefile dev-env gate.
+      SKIP_JARVY_DOCTOR: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up CUE
+        uses: cue-lang/setup-cue@v1.0.0
+        with:
+          cue-version: 'v0.16.1'
+
+      - name: Validate CUE
+        run: make validate
+
+      - name: Export YAML
+        run: make export
+
+      - name: Run kube-linter on rendered YAML
+        uses: stackrox/kube-linter-action@v1
+        with:
+          directory: clusters/
+        continue-on-error: true
+        id: kube-linter
+
+      - name: Copilot AI Security Review
+        env:
+          COPILOT_API_KEY: ${{ secrets.COPILOT_API_KEY }}
+        # Advisory only — a missing key or an aistudio hiccup must not
+        # red the PR. The post step below is guarded on actual output.
+        continue-on-error: true
+        run: |
+          if [ -z "${COPILOT_API_KEY:-}" ]; then
+            echo "COPILOT_API_KEY not set — skipping AI review"
+            exit 0
+          fi
+          pip install aistudio
+          aistudio review --pr ${{ github.event.pull_request.number }} --repo ${{ github.repository }} --token $COPILOT_API_KEY --output pr-comments
+
+      - name: Post AI review comments
+        # Only post when the review actually produced comments — the
+        # sticky-comment action errors ("message or path required") on a
+        # missing/empty file.
+        if: always() && hashFiles('pr-comments') != ''
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          path: pr-comments

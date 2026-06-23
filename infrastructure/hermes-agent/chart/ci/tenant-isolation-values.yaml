@@ -1,0 +1,56 @@
+fullnameOverride: hermes-multi-tenant
+
+tenant:
+  id: tenant-a
+  labels:
+    hermes.nous.ai/environment: prod
+    hermes.nous.ai/owner: platform
+
+tenantIsolation:
+  enabled: true
+  allowSameNamespace: true
+  authorizedNamespaces:
+    - ingress-nginx
+    - istio-system
+  allowDns: true
+  additionalEgress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+
+apiServer:
+  enabled: true
+  host: 0.0.0.0
+  port: 8642
+
+secrets:
+  API_SERVER_KEY: tenant-fixture-api-key
+
+service:
+  enabled: true
+  annotations:
+    external-dns.alpha.kubernetes.io/hostname: hermes.tenant-a.example.test
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/backend-protocol: HTTP
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+  hosts:
+    - host: hermes.tenant-a.example.test
+      paths:
+        - path: /
+          pathType: Prefix
+
+virtualService:
+  enabled: true
+  gateways:
+    - istio-system/tenant-gateway
+  hosts:
+    - hermes.tenant-a.example.test

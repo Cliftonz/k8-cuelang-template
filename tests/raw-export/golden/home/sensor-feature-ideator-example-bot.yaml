@@ -1,0 +1,110 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-ideator-example-bot
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: feature-comment
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - created
+          - path: body.issue.labels.#.name
+            type: string
+            value:
+              - ai-feature
+          - path: body.repository.full_name
+            type: string
+            value:
+              - ^example-bot/
+          - path: body.comment.body
+            type: string
+            value:
+              - ^(<!--\s*(ai-agent|ai-finding|ai-lead-dev-summary|needs-human-input|branch-announce|ai-bot)|:unlock:)
+            comparator: '!='
+          - path: body.issue.labels.#.name
+            type: string
+            value:
+              - ^awaiting-human$
+            comparator: '!='
+  triggers:
+    - rateLimit:
+        unit: Minute
+        requestsPerUnit: 1
+      template:
+        name: spawn-ideator
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: kelos.dev/v1alpha1
+              kind: Task
+              metadata:
+                name: PLACEHOLDER_NAME
+                namespace: kelos-system
+                labels:
+                  app.kubernetes.io/managed-by: argo-events
+                  kelos.dev/role: feature-ideator
+                  kelos.dev/owner-scope: example-bot
+              spec:
+                type: claude-code
+                credentials:
+                  type: oauth
+                  secretRef:
+                    name: claude-code-oauth
+                agentConfigRef:
+                  name: feature-ideator
+                ttlSecondsAfterFinished: 3600
+                podOverrides:
+                  env:
+                    - name: GH_TOKEN
+                      valueFrom:
+                        secretKeyRef:
+                          name: github-pat-example-bot
+                          key: GITHUB_TOKEN
+                prompt: (filled by parameters)
+          parameters:
+            - src:
+                dependencyName: feature-comment
+                dataTemplate: feature-ideator-example-bot-{{ .Input.body.issue.number }}-c{{ printf "%.0f" .Input.body.comment.id }}
+              dest: metadata.name
+            - src:
+                dependencyName: feature-comment
+                dataTemplate: |-
+                  A new comment was posted on issue #{{ .Input.body.issue.number }} ({{ .Input.body.issue.title }}) in {{ .Input.body.repository.full_name }}.
+
+                  Repo:        {{ .Input.body.repository.full_name }}
+                  Issue:       #{{ .Input.body.issue.number }}
+                  Commenter:   {{ .Input.body.comment.user.login }}
+
+                  Read the FULL issue thread via `gh api repos/{{ .Input.body.repository.full_name }}/issues/{{ .Input.body.issue.number }}/comments --paginate` and the issue body via `gh issue view {{ .Input.body.issue.number }} --repo {{ .Input.body.repository.full_name }}`.
+
+                  CRITICAL — bot loop prevention:
+                  EVERY comment you post MUST begin with the literal first line:
+                      <!-- ai-agent -->
+                  followed by a blank line, then your content. The webhook sensor
+                  filters out comments starting with that marker so your replies
+                  don't retrigger you. Comments without it WILL recurse.
+
+                  Follow your AgentConfig. Post ONE comment (question / proposed scope / ready-for-impl). If blocked on human, the body should be:
+                      <!-- ai-agent -->
+                      <!-- needs-human-input -->
+
+                      @<author> — <your question>
+                  Then apply the `awaiting-human` label via `gh issue edit`.
+
+                  Stop after posting.
+              dest: spec.prompt

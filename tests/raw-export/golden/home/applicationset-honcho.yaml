@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: honcho
+  namespace: argocd
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  generators:
+    - list:
+        elements:
+          - {}
+  template:
+    metadata:
+      name: honcho
+      labels:
+        app.kubernetes.io/part-of: bb-platform
+      finalizers:
+        - resources-finalizer.argoproj.io
+    spec:
+      project: bb-platform
+      source:
+        repoURL: https://github.com/example-org/k8-infra.git
+        targetRevision: main
+        path: infrastructure/honcho
+        directory:
+          recurse: false
+      destination:
+        name: in-cluster
+        namespace: honcho
+      syncPolicy:
+        managedNamespaceMetadata:
+          labels:
+            app.kubernetes.io/part-of: bb-platform
+            infra.k8/tier: production
+            infra.k8/cluster: home
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 30s
+            factor: 2
+            maxDuration: 5m

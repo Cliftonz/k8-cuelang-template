@@ -1,0 +1,58 @@
+# Spegel values tuned for Talos.
+#
+# What Spegel does:
+#   Stateless distributed in-cluster pull-through cache. Each node runs a
+#   Spegel pod that reads its OWN containerd image store + advertises the
+#   layers it has via libp2p. When a node needs an image, containerd is
+#   reconfigured (via mirror config) to ask Spegel first; Spegel asks
+#   peer nodes; if any peer has it, fetch over LAN instead of pulling
+#   from the upstream registry. Falls back to upstream on miss.
+#
+# Effect:
+#   - Cuts repeated upstream pulls when scaling a Deployment from 1→N
+#     replicas across many nodes.
+#   - Survives ghcr.io/docker.io rate limits and outages for cached imgs.
+#   - Speeds rolling updates on big images (Crossplane providers, claude-
+#     code:v0.10+ images, kelos agents — all >500 MiB on this cluster).
+#
+# Talos specifics:
+#   - containerdRegistryConfigPath: /etc/cri/conf.d/hosts is where Talos
+#     keeps containerd's mirror config. Spegel writes itself in there.
+#
+# Reference:
+#   https://docs.siderolabs.com/kubernetes-guides/advanced-guides/spegel
+#   https://github.com/spegel-org/spegel
+
+spegel:
+  # Talos's containerd registry-mirror config lives here.
+  containerdRegistryConfigPath: /etc/cri/conf.d/hosts
+
+# Spegel needs hostNetwork + hostPath access to read containerd's image
+# store and bind a node-local advertisement port. The chart's default
+# securityContext expects the namespace to allow privileged pods (we
+# label the spegel ns privileged on install).
+
+# Resource shape — agent runs on every node. Default chart values are
+# generous; cap to homelab budget.
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# Advertise on the same internal LAN. Bootstrap defaults to in-cluster
+# k8s service discovery (no extra config needed).
+service:
+  registry:
+    nodePort: 30020
+  metrics:
+    enabled: true
+
+# Verbosity — INFO is fine; bump to DEBUG only when chasing miss-rate
+# regressions.
+logLevel: INFO
+
+# Image pull-policy / version pinned via the Helm install command's
+# --version flag, not here.

@@ -1,0 +1,896 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: feature-review-panel
+  namespace: argo-events
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  template:
+    serviceAccountName: argo-events-sa
+  dependencies:
+    - name: pr-pending-review
+      eventSourceName: github-webhook
+      eventName: pr-events
+      filters:
+        data:
+          - path: body.action
+            type: string
+            value:
+              - labeled
+          - path: body.label.name
+            type: string
+            value:
+              - ^pending-review$
+          - path: body.pull_request.number
+            type: number
+            comparator: '>'
+            value:
+              - "0"
+          - path: body.repository.full_name
+            type: string
+            value:
+              - ^example-org/
+  triggers:
+    - template:
+        name: spawn-review-security
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: panel-spawner-security-
+                namespace: kelos-system
+              spec:
+                backoffLimit: 0
+                template:
+                  spec:
+                    restartPolicy: Never
+                    serviceAccountName: feature-orchestrator
+                    containers:
+                      - name: spawner
+                        image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: ROLE
+                            value: security
+                          - name: REPO
+                            value: PLACEHOLDER
+                          - name: PR_NUMBER
+                            value: PLACEHOLDER
+                          - name: HEAD_SHA
+                            value: PLACEHOLDER
+                          - name: BRANCH
+                            value: PLACEHOLDER
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 20m
+                            memory: 64Mi
+                          limits:
+                            cpu: 200m
+                            memory: 256Mi
+                ttlSecondsAfterFinished: 600
+          parameters:
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: '{{ .Input.body.pull_request.number }}'
+              dest: spec.template.spec.containers.0.env.2.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.sha
+              dest: spec.template.spec.containers.0.env.3.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.ref
+              dest: spec.template.spec.containers.0.env.4.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: |-
+                  set -eu
+
+                  # Feature flag: ConfigMap/feature-flags in kelos-system,
+                  # key data.review-pipeline-enabled. Default-deny: anything
+                  # other than the literal string "true" halts the spawn.
+                  # Toggling lives in clusters/home/configmap-feature-flags.yaml
+                  # (GitOps), or for a quick override use
+                  # `ci/scripts/feature-review-killswitch.sh on|off`.
+                  ENABLED=$(kubectl get configmap feature-flags -n kelos-system \
+                    -o jsonpath='{.data.review-pipeline-enabled}' 2>/dev/null || true)
+                  if [ "$ENABLED" != "true" ]; then
+                    echo "feature-flags.review-pipeline-enabled=$ENABLED (need 'true'); exit 0 (no spawn)"
+                    exit 0
+                  fi
+
+                  apk add --no-cache jq >/dev/null
+                  if ! command -v gh >/dev/null 2>&1; then
+                    wget -qO- https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                    mv /tmp/gh_2.62.0_linux_amd64/bin/gh /usr/local/bin/gh
+                  fi
+                  export GH_TOKEN
+
+                  CHECK_RUN_NAME="ai-review-${ROLE}"
+                  echo "creating check run $CHECK_RUN_NAME on $REPO@$HEAD_SHA ..."
+                  CHECK_RUN_ID=$(gh api -X POST "repos/$REPO/check-runs" \
+                    -f name="$CHECK_RUN_NAME" \
+                    -f head_sha="$HEAD_SHA" \
+                    -f status="in_progress" \
+                    -F "output[title]=${ROLE} review queued" \
+                    -F "output[summary]=Spawning Kelos Task; output appears here when complete." \
+                    --jq '.id')
+                  echo "check_run_id=$CHECK_RUN_ID"
+
+                  WORKSPACE=$(echo "$REPO" | awk -F/ '{print tolower($2)}')
+
+                  cat <<YAML | kubectl create -f -
+                  apiVersion: kelos.dev/v1alpha1
+                  kind: Task
+                  metadata:
+                    generateName: feature-review-${ROLE}-
+                    namespace: kelos-system
+                    labels:
+                      app.kubernetes.io/managed-by: argo-events
+                      kelos.dev/role: feature-review-${ROLE}
+                  spec:
+                    type: claude-code
+                    credentials:
+                      type: oauth
+                      secretRef: {name: claude-code-oauth}
+                    agentConfigRef: {name: feature-review-${ROLE}}
+                    workspaceRef: {name: $WORKSPACE}
+                    ttlSecondsAfterFinished: 3600
+                    podOverrides:
+                      env:
+                        - name: GH_TOKEN
+                          valueFrom:
+                            secretKeyRef: {name: github-app-token, key: token}
+                        - {name: REPO,            value: "$REPO"}
+                        - {name: PR_NUMBER,       value: "$PR_NUMBER"}
+                        - {name: HEAD_SHA,        value: "$HEAD_SHA"}
+                        - {name: BRANCH,          value: "$BRANCH"}
+                        - {name: CHECK_RUN_NAME,  value: "$CHECK_RUN_NAME"}
+                        - {name: CHECK_RUN_ID,    value: "$CHECK_RUN_ID"}
+                    prompt: |
+                      Run the ${ROLE} review on PR #$PR_NUMBER ($REPO) at commit $HEAD_SHA.
+
+                      A check run already exists for you (id=$CHECK_RUN_ID, name=$CHECK_RUN_NAME).
+                      Do NOT create a new check run. PATCH this one as your AgentConfig
+                      PROTOCOL describes. Env vars are set: REPO, PR_NUMBER, HEAD_SHA,
+                      BRANCH, CHECK_RUN_NAME, CHECK_RUN_ID, GH_TOKEN (already set; gh CLI uses it directly).
+
+                      Stop when the check run conclusion is set. No PR/issue comments.
+                  YAML
+                  echo "spawned feature-review-${ROLE} Task for PR #$PR_NUMBER"
+              dest: spec.template.spec.containers.0.command.2
+    - template:
+        name: spawn-review-architect
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: panel-spawner-architect-
+                namespace: kelos-system
+              spec:
+                backoffLimit: 0
+                template:
+                  spec:
+                    restartPolicy: Never
+                    serviceAccountName: feature-orchestrator
+                    containers:
+                      - name: spawner
+                        image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: ROLE
+                            value: architect
+                          - name: REPO
+                            value: PLACEHOLDER
+                          - name: PR_NUMBER
+                            value: PLACEHOLDER
+                          - name: HEAD_SHA
+                            value: PLACEHOLDER
+                          - name: BRANCH
+                            value: PLACEHOLDER
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 20m
+                            memory: 64Mi
+                          limits:
+                            cpu: 200m
+                            memory: 256Mi
+                ttlSecondsAfterFinished: 600
+          parameters:
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: '{{ .Input.body.pull_request.number }}'
+              dest: spec.template.spec.containers.0.env.2.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.sha
+              dest: spec.template.spec.containers.0.env.3.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.ref
+              dest: spec.template.spec.containers.0.env.4.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: |-
+                  set -eu
+
+                  # Feature flag: ConfigMap/feature-flags in kelos-system,
+                  # key data.review-pipeline-enabled. Default-deny: anything
+                  # other than the literal string "true" halts the spawn.
+                  # Toggling lives in clusters/home/configmap-feature-flags.yaml
+                  # (GitOps), or for a quick override use
+                  # `ci/scripts/feature-review-killswitch.sh on|off`.
+                  ENABLED=$(kubectl get configmap feature-flags -n kelos-system \
+                    -o jsonpath='{.data.review-pipeline-enabled}' 2>/dev/null || true)
+                  if [ "$ENABLED" != "true" ]; then
+                    echo "feature-flags.review-pipeline-enabled=$ENABLED (need 'true'); exit 0 (no spawn)"
+                    exit 0
+                  fi
+
+                  apk add --no-cache jq >/dev/null
+                  if ! command -v gh >/dev/null 2>&1; then
+                    wget -qO- https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                    mv /tmp/gh_2.62.0_linux_amd64/bin/gh /usr/local/bin/gh
+                  fi
+                  export GH_TOKEN
+
+                  CHECK_RUN_NAME="ai-review-${ROLE}"
+                  echo "creating check run $CHECK_RUN_NAME on $REPO@$HEAD_SHA ..."
+                  CHECK_RUN_ID=$(gh api -X POST "repos/$REPO/check-runs" \
+                    -f name="$CHECK_RUN_NAME" \
+                    -f head_sha="$HEAD_SHA" \
+                    -f status="in_progress" \
+                    -F "output[title]=${ROLE} review queued" \
+                    -F "output[summary]=Spawning Kelos Task; output appears here when complete." \
+                    --jq '.id')
+                  echo "check_run_id=$CHECK_RUN_ID"
+
+                  WORKSPACE=$(echo "$REPO" | awk -F/ '{print tolower($2)}')
+
+                  cat <<YAML | kubectl create -f -
+                  apiVersion: kelos.dev/v1alpha1
+                  kind: Task
+                  metadata:
+                    generateName: feature-review-${ROLE}-
+                    namespace: kelos-system
+                    labels:
+                      app.kubernetes.io/managed-by: argo-events
+                      kelos.dev/role: feature-review-${ROLE}
+                  spec:
+                    type: claude-code
+                    credentials:
+                      type: oauth
+                      secretRef: {name: claude-code-oauth}
+                    agentConfigRef: {name: feature-review-${ROLE}}
+                    workspaceRef: {name: $WORKSPACE}
+                    ttlSecondsAfterFinished: 3600
+                    podOverrides:
+                      env:
+                        - name: GH_TOKEN
+                          valueFrom:
+                            secretKeyRef: {name: github-app-token, key: token}
+                        - {name: REPO,            value: "$REPO"}
+                        - {name: PR_NUMBER,       value: "$PR_NUMBER"}
+                        - {name: HEAD_SHA,        value: "$HEAD_SHA"}
+                        - {name: BRANCH,          value: "$BRANCH"}
+                        - {name: CHECK_RUN_NAME,  value: "$CHECK_RUN_NAME"}
+                        - {name: CHECK_RUN_ID,    value: "$CHECK_RUN_ID"}
+                    prompt: |
+                      Run the ${ROLE} review on PR #$PR_NUMBER ($REPO) at commit $HEAD_SHA.
+
+                      A check run already exists for you (id=$CHECK_RUN_ID, name=$CHECK_RUN_NAME).
+                      Do NOT create a new check run. PATCH this one as your AgentConfig
+                      PROTOCOL describes. Env vars are set: REPO, PR_NUMBER, HEAD_SHA,
+                      BRANCH, CHECK_RUN_NAME, CHECK_RUN_ID, GH_TOKEN (already set; gh CLI uses it directly).
+
+                      Stop when the check run conclusion is set. No PR/issue comments.
+                  YAML
+                  echo "spawned feature-review-${ROLE} Task for PR #$PR_NUMBER"
+              dest: spec.template.spec.containers.0.command.2
+    - template:
+        name: spawn-review-qa
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: panel-spawner-qa-
+                namespace: kelos-system
+              spec:
+                backoffLimit: 0
+                template:
+                  spec:
+                    restartPolicy: Never
+                    serviceAccountName: feature-orchestrator
+                    containers:
+                      - name: spawner
+                        image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: ROLE
+                            value: qa
+                          - name: REPO
+                            value: PLACEHOLDER
+                          - name: PR_NUMBER
+                            value: PLACEHOLDER
+                          - name: HEAD_SHA
+                            value: PLACEHOLDER
+                          - name: BRANCH
+                            value: PLACEHOLDER
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 20m
+                            memory: 64Mi
+                          limits:
+                            cpu: 200m
+                            memory: 256Mi
+                ttlSecondsAfterFinished: 600
+          parameters:
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: '{{ .Input.body.pull_request.number }}'
+              dest: spec.template.spec.containers.0.env.2.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.sha
+              dest: spec.template.spec.containers.0.env.3.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.ref
+              dest: spec.template.spec.containers.0.env.4.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: |-
+                  set -eu
+
+                  # Feature flag: ConfigMap/feature-flags in kelos-system,
+                  # key data.review-pipeline-enabled. Default-deny: anything
+                  # other than the literal string "true" halts the spawn.
+                  # Toggling lives in clusters/home/configmap-feature-flags.yaml
+                  # (GitOps), or for a quick override use
+                  # `ci/scripts/feature-review-killswitch.sh on|off`.
+                  ENABLED=$(kubectl get configmap feature-flags -n kelos-system \
+                    -o jsonpath='{.data.review-pipeline-enabled}' 2>/dev/null || true)
+                  if [ "$ENABLED" != "true" ]; then
+                    echo "feature-flags.review-pipeline-enabled=$ENABLED (need 'true'); exit 0 (no spawn)"
+                    exit 0
+                  fi
+
+                  apk add --no-cache jq >/dev/null
+                  if ! command -v gh >/dev/null 2>&1; then
+                    wget -qO- https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                    mv /tmp/gh_2.62.0_linux_amd64/bin/gh /usr/local/bin/gh
+                  fi
+                  export GH_TOKEN
+
+                  CHECK_RUN_NAME="ai-review-${ROLE}"
+                  echo "creating check run $CHECK_RUN_NAME on $REPO@$HEAD_SHA ..."
+                  CHECK_RUN_ID=$(gh api -X POST "repos/$REPO/check-runs" \
+                    -f name="$CHECK_RUN_NAME" \
+                    -f head_sha="$HEAD_SHA" \
+                    -f status="in_progress" \
+                    -F "output[title]=${ROLE} review queued" \
+                    -F "output[summary]=Spawning Kelos Task; output appears here when complete." \
+                    --jq '.id')
+                  echo "check_run_id=$CHECK_RUN_ID"
+
+                  WORKSPACE=$(echo "$REPO" | awk -F/ '{print tolower($2)}')
+
+                  cat <<YAML | kubectl create -f -
+                  apiVersion: kelos.dev/v1alpha1
+                  kind: Task
+                  metadata:
+                    generateName: feature-review-${ROLE}-
+                    namespace: kelos-system
+                    labels:
+                      app.kubernetes.io/managed-by: argo-events
+                      kelos.dev/role: feature-review-${ROLE}
+                  spec:
+                    type: claude-code
+                    credentials:
+                      type: oauth
+                      secretRef: {name: claude-code-oauth}
+                    agentConfigRef: {name: feature-review-${ROLE}}
+                    workspaceRef: {name: $WORKSPACE}
+                    ttlSecondsAfterFinished: 3600
+                    podOverrides:
+                      env:
+                        - name: GH_TOKEN
+                          valueFrom:
+                            secretKeyRef: {name: github-app-token, key: token}
+                        - {name: REPO,            value: "$REPO"}
+                        - {name: PR_NUMBER,       value: "$PR_NUMBER"}
+                        - {name: HEAD_SHA,        value: "$HEAD_SHA"}
+                        - {name: BRANCH,          value: "$BRANCH"}
+                        - {name: CHECK_RUN_NAME,  value: "$CHECK_RUN_NAME"}
+                        - {name: CHECK_RUN_ID,    value: "$CHECK_RUN_ID"}
+                    prompt: |
+                      Run the ${ROLE} review on PR #$PR_NUMBER ($REPO) at commit $HEAD_SHA.
+
+                      A check run already exists for you (id=$CHECK_RUN_ID, name=$CHECK_RUN_NAME).
+                      Do NOT create a new check run. PATCH this one as your AgentConfig
+                      PROTOCOL describes. Env vars are set: REPO, PR_NUMBER, HEAD_SHA,
+                      BRANCH, CHECK_RUN_NAME, CHECK_RUN_ID, GH_TOKEN (already set; gh CLI uses it directly).
+
+                      Stop when the check run conclusion is set. No PR/issue comments.
+                  YAML
+                  echo "spawned feature-review-${ROLE} Task for PR #$PR_NUMBER"
+              dest: spec.template.spec.containers.0.command.2
+    - template:
+        name: spawn-review-devops
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: panel-spawner-devops-
+                namespace: kelos-system
+              spec:
+                backoffLimit: 0
+                template:
+                  spec:
+                    restartPolicy: Never
+                    serviceAccountName: feature-orchestrator
+                    containers:
+                      - name: spawner
+                        image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: ROLE
+                            value: devops
+                          - name: REPO
+                            value: PLACEHOLDER
+                          - name: PR_NUMBER
+                            value: PLACEHOLDER
+                          - name: HEAD_SHA
+                            value: PLACEHOLDER
+                          - name: BRANCH
+                            value: PLACEHOLDER
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 20m
+                            memory: 64Mi
+                          limits:
+                            cpu: 200m
+                            memory: 256Mi
+                ttlSecondsAfterFinished: 600
+          parameters:
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: '{{ .Input.body.pull_request.number }}'
+              dest: spec.template.spec.containers.0.env.2.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.sha
+              dest: spec.template.spec.containers.0.env.3.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.ref
+              dest: spec.template.spec.containers.0.env.4.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: |-
+                  set -eu
+
+                  # Feature flag: ConfigMap/feature-flags in kelos-system,
+                  # key data.review-pipeline-enabled. Default-deny: anything
+                  # other than the literal string "true" halts the spawn.
+                  # Toggling lives in clusters/home/configmap-feature-flags.yaml
+                  # (GitOps), or for a quick override use
+                  # `ci/scripts/feature-review-killswitch.sh on|off`.
+                  ENABLED=$(kubectl get configmap feature-flags -n kelos-system \
+                    -o jsonpath='{.data.review-pipeline-enabled}' 2>/dev/null || true)
+                  if [ "$ENABLED" != "true" ]; then
+                    echo "feature-flags.review-pipeline-enabled=$ENABLED (need 'true'); exit 0 (no spawn)"
+                    exit 0
+                  fi
+
+                  apk add --no-cache jq >/dev/null
+                  if ! command -v gh >/dev/null 2>&1; then
+                    wget -qO- https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                    mv /tmp/gh_2.62.0_linux_amd64/bin/gh /usr/local/bin/gh
+                  fi
+                  export GH_TOKEN
+
+                  CHECK_RUN_NAME="ai-review-${ROLE}"
+                  echo "creating check run $CHECK_RUN_NAME on $REPO@$HEAD_SHA ..."
+                  CHECK_RUN_ID=$(gh api -X POST "repos/$REPO/check-runs" \
+                    -f name="$CHECK_RUN_NAME" \
+                    -f head_sha="$HEAD_SHA" \
+                    -f status="in_progress" \
+                    -F "output[title]=${ROLE} review queued" \
+                    -F "output[summary]=Spawning Kelos Task; output appears here when complete." \
+                    --jq '.id')
+                  echo "check_run_id=$CHECK_RUN_ID"
+
+                  WORKSPACE=$(echo "$REPO" | awk -F/ '{print tolower($2)}')
+
+                  cat <<YAML | kubectl create -f -
+                  apiVersion: kelos.dev/v1alpha1
+                  kind: Task
+                  metadata:
+                    generateName: feature-review-${ROLE}-
+                    namespace: kelos-system
+                    labels:
+                      app.kubernetes.io/managed-by: argo-events
+                      kelos.dev/role: feature-review-${ROLE}
+                  spec:
+                    type: claude-code
+                    credentials:
+                      type: oauth
+                      secretRef: {name: claude-code-oauth}
+                    agentConfigRef: {name: feature-review-${ROLE}}
+                    workspaceRef: {name: $WORKSPACE}
+                    ttlSecondsAfterFinished: 3600
+                    podOverrides:
+                      env:
+                        - name: GH_TOKEN
+                          valueFrom:
+                            secretKeyRef: {name: github-app-token, key: token}
+                        - {name: REPO,            value: "$REPO"}
+                        - {name: PR_NUMBER,       value: "$PR_NUMBER"}
+                        - {name: HEAD_SHA,        value: "$HEAD_SHA"}
+                        - {name: BRANCH,          value: "$BRANCH"}
+                        - {name: CHECK_RUN_NAME,  value: "$CHECK_RUN_NAME"}
+                        - {name: CHECK_RUN_ID,    value: "$CHECK_RUN_ID"}
+                    prompt: |
+                      Run the ${ROLE} review on PR #$PR_NUMBER ($REPO) at commit $HEAD_SHA.
+
+                      A check run already exists for you (id=$CHECK_RUN_ID, name=$CHECK_RUN_NAME).
+                      Do NOT create a new check run. PATCH this one as your AgentConfig
+                      PROTOCOL describes. Env vars are set: REPO, PR_NUMBER, HEAD_SHA,
+                      BRANCH, CHECK_RUN_NAME, CHECK_RUN_ID, GH_TOKEN (already set; gh CLI uses it directly).
+
+                      Stop when the check run conclusion is set. No PR/issue comments.
+                  YAML
+                  echo "spawned feature-review-${ROLE} Task for PR #$PR_NUMBER"
+              dest: spec.template.spec.containers.0.command.2
+    - template:
+        name: spawn-review-designer
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: panel-spawner-designer-
+                namespace: kelos-system
+              spec:
+                backoffLimit: 0
+                template:
+                  spec:
+                    restartPolicy: Never
+                    serviceAccountName: feature-orchestrator
+                    containers:
+                      - name: spawner
+                        image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: ROLE
+                            value: designer
+                          - name: REPO
+                            value: PLACEHOLDER
+                          - name: PR_NUMBER
+                            value: PLACEHOLDER
+                          - name: HEAD_SHA
+                            value: PLACEHOLDER
+                          - name: BRANCH
+                            value: PLACEHOLDER
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 20m
+                            memory: 64Mi
+                          limits:
+                            cpu: 200m
+                            memory: 256Mi
+                ttlSecondsAfterFinished: 600
+          parameters:
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: '{{ .Input.body.pull_request.number }}'
+              dest: spec.template.spec.containers.0.env.2.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.sha
+              dest: spec.template.spec.containers.0.env.3.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.ref
+              dest: spec.template.spec.containers.0.env.4.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: |-
+                  set -eu
+
+                  # Feature flag: ConfigMap/feature-flags in kelos-system,
+                  # key data.review-pipeline-enabled. Default-deny: anything
+                  # other than the literal string "true" halts the spawn.
+                  # Toggling lives in clusters/home/configmap-feature-flags.yaml
+                  # (GitOps), or for a quick override use
+                  # `ci/scripts/feature-review-killswitch.sh on|off`.
+                  ENABLED=$(kubectl get configmap feature-flags -n kelos-system \
+                    -o jsonpath='{.data.review-pipeline-enabled}' 2>/dev/null || true)
+                  if [ "$ENABLED" != "true" ]; then
+                    echo "feature-flags.review-pipeline-enabled=$ENABLED (need 'true'); exit 0 (no spawn)"
+                    exit 0
+                  fi
+
+                  apk add --no-cache jq >/dev/null
+                  if ! command -v gh >/dev/null 2>&1; then
+                    wget -qO- https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                    mv /tmp/gh_2.62.0_linux_amd64/bin/gh /usr/local/bin/gh
+                  fi
+                  export GH_TOKEN
+
+                  CHECK_RUN_NAME="ai-review-${ROLE}"
+                  echo "creating check run $CHECK_RUN_NAME on $REPO@$HEAD_SHA ..."
+                  CHECK_RUN_ID=$(gh api -X POST "repos/$REPO/check-runs" \
+                    -f name="$CHECK_RUN_NAME" \
+                    -f head_sha="$HEAD_SHA" \
+                    -f status="in_progress" \
+                    -F "output[title]=${ROLE} review queued" \
+                    -F "output[summary]=Spawning Kelos Task; output appears here when complete." \
+                    --jq '.id')
+                  echo "check_run_id=$CHECK_RUN_ID"
+
+                  WORKSPACE=$(echo "$REPO" | awk -F/ '{print tolower($2)}')
+
+                  cat <<YAML | kubectl create -f -
+                  apiVersion: kelos.dev/v1alpha1
+                  kind: Task
+                  metadata:
+                    generateName: feature-review-${ROLE}-
+                    namespace: kelos-system
+                    labels:
+                      app.kubernetes.io/managed-by: argo-events
+                      kelos.dev/role: feature-review-${ROLE}
+                  spec:
+                    type: claude-code
+                    credentials:
+                      type: oauth
+                      secretRef: {name: claude-code-oauth}
+                    agentConfigRef: {name: feature-review-${ROLE}}
+                    workspaceRef: {name: $WORKSPACE}
+                    ttlSecondsAfterFinished: 3600
+                    podOverrides:
+                      env:
+                        - name: GH_TOKEN
+                          valueFrom:
+                            secretKeyRef: {name: github-app-token, key: token}
+                        - {name: REPO,            value: "$REPO"}
+                        - {name: PR_NUMBER,       value: "$PR_NUMBER"}
+                        - {name: HEAD_SHA,        value: "$HEAD_SHA"}
+                        - {name: BRANCH,          value: "$BRANCH"}
+                        - {name: CHECK_RUN_NAME,  value: "$CHECK_RUN_NAME"}
+                        - {name: CHECK_RUN_ID,    value: "$CHECK_RUN_ID"}
+                    prompt: |
+                      Run the ${ROLE} review on PR #$PR_NUMBER ($REPO) at commit $HEAD_SHA.
+
+                      A check run already exists for you (id=$CHECK_RUN_ID, name=$CHECK_RUN_NAME).
+                      Do NOT create a new check run. PATCH this one as your AgentConfig
+                      PROTOCOL describes. Env vars are set: REPO, PR_NUMBER, HEAD_SHA,
+                      BRANCH, CHECK_RUN_NAME, CHECK_RUN_ID, GH_TOKEN (already set; gh CLI uses it directly).
+
+                      Stop when the check run conclusion is set. No PR/issue comments.
+                  YAML
+                  echo "spawned feature-review-${ROLE} Task for PR #$PR_NUMBER"
+              dest: spec.template.spec.containers.0.command.2
+    - template:
+        name: spawn-review-devrel
+        k8s:
+          operation: create
+          source:
+            resource:
+              apiVersion: batch/v1
+              kind: Job
+              metadata:
+                generateName: panel-spawner-devrel-
+                namespace: kelos-system
+              spec:
+                backoffLimit: 0
+                template:
+                  spec:
+                    restartPolicy: Never
+                    serviceAccountName: feature-orchestrator
+                    containers:
+                      - name: spawner
+                        image: alpine/k8s:1.31.1@sha256:dfe8c7a06c41d0b6e8757da99531f8f302e9a2687fa0155af4c4087df585c9c8
+                        command:
+                          - /bin/sh
+                          - -c
+                          - PLACEHOLDER
+                        env:
+                          - name: ROLE
+                            value: devrel
+                          - name: REPO
+                            value: PLACEHOLDER
+                          - name: PR_NUMBER
+                            value: PLACEHOLDER
+                          - name: HEAD_SHA
+                            value: PLACEHOLDER
+                          - name: BRANCH
+                            value: PLACEHOLDER
+                          - name: GH_TOKEN
+                            valueFrom:
+                              secretKeyRef:
+                                name: github-app-token
+                                key: token
+                        resources:
+                          requests:
+                            cpu: 20m
+                            memory: 64Mi
+                          limits:
+                            cpu: 200m
+                            memory: 256Mi
+                ttlSecondsAfterFinished: 600
+          parameters:
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.repository.full_name
+              dest: spec.template.spec.containers.0.env.1.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: '{{ .Input.body.pull_request.number }}'
+              dest: spec.template.spec.containers.0.env.2.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.sha
+              dest: spec.template.spec.containers.0.env.3.value
+            - src:
+                dependencyName: pr-pending-review
+                dataKey: body.pull_request.head.ref
+              dest: spec.template.spec.containers.0.env.4.value
+            - src:
+                dependencyName: pr-pending-review
+                dataTemplate: |-
+                  set -eu
+
+                  # Feature flag: ConfigMap/feature-flags in kelos-system,
+                  # key data.review-pipeline-enabled. Default-deny: anything
+                  # other than the literal string "true" halts the spawn.
+                  # Toggling lives in clusters/home/configmap-feature-flags.yaml
+                  # (GitOps), or for a quick override use
+                  # `ci/scripts/feature-review-killswitch.sh on|off`.
+                  ENABLED=$(kubectl get configmap feature-flags -n kelos-system \
+                    -o jsonpath='{.data.review-pipeline-enabled}' 2>/dev/null || true)
+                  if [ "$ENABLED" != "true" ]; then
+                    echo "feature-flags.review-pipeline-enabled=$ENABLED (need 'true'); exit 0 (no spawn)"
+                    exit 0
+                  fi
+
+                  apk add --no-cache jq >/dev/null
+                  if ! command -v gh >/dev/null 2>&1; then
+                    wget -qO- https://github.com/cli/cli/releases/download/v2.62.0/gh_2.62.0_linux_amd64.tar.gz | tar -xz -C /tmp
+                    mv /tmp/gh_2.62.0_linux_amd64/bin/gh /usr/local/bin/gh
+                  fi
+                  export GH_TOKEN
+
+                  CHECK_RUN_NAME="ai-review-${ROLE}"
+                  echo "creating check run $CHECK_RUN_NAME on $REPO@$HEAD_SHA ..."
+                  CHECK_RUN_ID=$(gh api -X POST "repos/$REPO/check-runs" \
+                    -f name="$CHECK_RUN_NAME" \
+                    -f head_sha="$HEAD_SHA" \
+                    -f status="in_progress" \
+                    -F "output[title]=${ROLE} review queued" \
+                    -F "output[summary]=Spawning Kelos Task; output appears here when complete." \
+                    --jq '.id')
+                  echo "check_run_id=$CHECK_RUN_ID"
+
+                  WORKSPACE=$(echo "$REPO" | awk -F/ '{print tolower($2)}')
+
+                  cat <<YAML | kubectl create -f -
+                  apiVersion: kelos.dev/v1alpha1
+                  kind: Task
+                  metadata:
+                    generateName: feature-review-${ROLE}-
+                    namespace: kelos-system
+                    labels:
+                      app.kubernetes.io/managed-by: argo-events
+                      kelos.dev/role: feature-review-${ROLE}
+                  spec:
+                    type: claude-code
+                    credentials:
+                      type: oauth
+                      secretRef: {name: claude-code-oauth}
+                    agentConfigRef: {name: feature-review-${ROLE}}
+                    workspaceRef: {name: $WORKSPACE}
+                    ttlSecondsAfterFinished: 3600
+                    podOverrides:
+                      env:
+                        - name: GH_TOKEN
+                          valueFrom:
+                            secretKeyRef: {name: github-app-token, key: token}
+                        - {name: REPO,            value: "$REPO"}
+                        - {name: PR_NUMBER,       value: "$PR_NUMBER"}
+                        - {name: HEAD_SHA,        value: "$HEAD_SHA"}
+                        - {name: BRANCH,          value: "$BRANCH"}
+                        - {name: CHECK_RUN_NAME,  value: "$CHECK_RUN_NAME"}
+                        - {name: CHECK_RUN_ID,    value: "$CHECK_RUN_ID"}
+                    prompt: |
+                      Run the ${ROLE} review on PR #$PR_NUMBER ($REPO) at commit $HEAD_SHA.
+
+                      A check run already exists for you (id=$CHECK_RUN_ID, name=$CHECK_RUN_NAME).
+                      Do NOT create a new check run. PATCH this one as your AgentConfig
+                      PROTOCOL describes. Env vars are set: REPO, PR_NUMBER, HEAD_SHA,
+                      BRANCH, CHECK_RUN_NAME, CHECK_RUN_ID, GH_TOKEN (already set; gh CLI uses it directly).
+
+                      Stop when the check run conclusion is set. No PR/issue comments.
+                  YAML
+                  echo "spawned feature-review-${ROLE} Task for PR #$PR_NUMBER"
+              dest: spec.template.spec.containers.0.command.2

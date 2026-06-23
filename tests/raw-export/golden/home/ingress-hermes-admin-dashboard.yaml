@@ -1,0 +1,40 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    cert-manager.io/cluster-issuer: openbao-example-internal
+    external-dns.alpha.kubernetes.io/target: 192.168.1.235
+    gethomepage.dev/enabled: "true"
+    gethomepage.dev/name: Hermes Dashboard (Admin)
+    gethomepage.dev/group: Hermes Profiles
+    gethomepage.dev/icon: openai.png
+    gethomepage.dev/description: Web dashboard + TUI — Admin (Dex-gated)
+    gethomepage.dev/href: https://hermes-admin-dashboard.example.internal
+    gethomepage.dev/siteMonitor: http://hermes-admin-dashboard.example.internal
+    gethomepage.dev/pod-selector: app.kubernetes.io/name=hermes-agent
+    traefik.ingress.kubernetes.io/router.middlewares: oauth-proxy-auth-with-redirect@kubernetescrd
+  name: hermes-admin-dashboard
+  namespace: hermes
+  labels:
+    app.kubernetes.io/managed-by: k8-infra
+    app.kubernetes.io/part-of: platform
+    infra.k8/tier: production
+    infra.k8/cluster: home
+    infra.k8/owner: platform-team
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: hermes-admin-dashboard.example.internal
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: hermes-hermes-agent
+                port:
+                  number: 9119
+  tls:
+    - secretName: hermes-admin-dashboard-tls
+      hosts:
+        - hermes-admin-dashboard.example.internal
