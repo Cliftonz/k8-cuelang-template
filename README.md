@@ -1,121 +1,97 @@
-# k8-cuelang-template
+<!--
+ Copyright 2018 The CUE Authors
 
-A production-shaped template for managing Kubernetes cluster infrastructure with
-**[CUE](https://cuelang.org)** and **[Crossplane](https://crossplane.io)** in a
-hub-and-spoke GitOps model. CUE validates every contract and renders deterministic
-YAML at build time — there is no runtime CUE and no untyped Helm sprawl.
+ Licensed under the Apache License, Version 2.0 (the "License");
+ you may not use this file except in compliance with the License.
+ You may obtain a copy of the License at
 
-This repo is a **fully worked example**, not a skeleton. It ships two real example
-clusters (`home`, `preview`), ~30 platform APIs (XRDs + Compositions), a tier-based
-policy system, a raw-manifest fallback path, golden regression tests, and CI. Fork
-it, replace the placeholder values, and point it at your own clusters.
+     http://www.apache.org/licenses/LICENSE-2.0
 
-> [!IMPORTANT]
-> **All identifying values in this repo are placeholders.** Before deploying,
-> replace them with your own. See [Placeholders](#placeholders-replace-before-use).
+ Unless required by applicable law or agreed to in writing, software
+ distributed under the License is distributed on an "AS IS" BASIS,
+ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ See the License for the specific language governing permissions and
+ limitations under the License.
+-->
+[![Go Reference](https://pkg.go.dev/badge/cuelang.org/go.svg)](https://pkg.go.dev/cuelang.org/go)
+[![Documentation](https://img.shields.io/badge/CUE-Docs-0066ff)](https://cuelang.org/docs/)
+[![Github](https://github.com/cue-lang/cue/actions/workflows/trybot.yaml/badge.svg)](https://github.com/cue-lang/cue/actions/workflows/trybot.yaml?query=branch%3Amaster+event%3Apush)
+[![Go 1.25+](https://img.shields.io/badge/go-1.25-9cf.svg)](https://golang.org/dl/)
+[![platforms](https://img.shields.io/badge/platforms-linux|windows|macos-inactive.svg)]()
+[![Docker Image](https://img.shields.io/docker/v/cuelang/cue?sort=semver&label=docker)](https://hub.docker.com/r/cuelang/cue)
+
+# CUE - _Configure, Unify, Execute_
+
+CUE makes it easy to validate data, write schemas,
+and ensure configurations align with policies.
+
+CUE works with a wide range of tools and formats that you're already using
+such as Go, JSON, YAML, TOML, OpenAPI, Protobuf, and JSON Schema.
+
+For more information and documentation, including __tutorials and guides__, see [cuelang.org](https://cuelang.org).
+
+### Download and Install
+
+The full range of installation methods for the `cue` command are listed on
+[cuelang.org](https://cuelang.org/docs/introduction/installation/),
+including the official container image suitable for use with Docker.
+Here are two common ways to install the command:
+
+#### Release builds
+
+Download the [latest release](https://github.com/cue-lang/cue/releases/latest/) from GitHub.
+
+#### Install from Source
+
+You need [Go 1.25 or later](https://go.dev/doc/install) to install CUE from source:
+
+	go install cuelang.org/go/cmd/cue@latest
+
+You can also clone the repository and build it directly via `go install ./cmd/cue`.
+
+### Learning CUE
+
+The fastest way to learn the basics is to follow [the language tour](https://cuelang.org/docs/tour/) on the website.
+
+The [cuelang.org](https://cuelang.org) website also contains
+[more documentation](https://cuelang.org/docs/), including
+[tutorials](https://cuelang.org/docs/tutorial/),
+[how-to guides](https://cuelang.org/docs/howto/),
+[concept guides](https://cuelang.org/docs/concept/), and
+[references](https://cuelang.org/docs/reference/).
+
+### Popular references
+
+- The official [CUE Language Specification](https://cuelang.org/docs/reference/spec/)
+- The CUE [Go API](https://pkg.go.dev/cuelang.org/go) on pkg.go.dev
+- [Builtin packages and functions](https://pkg.go.dev/cuelang.org/go/pkg)
+  available from CUE programs
+- [The `cue` command](https://cuelang.org/docs/reference/command/),
+  a versatile interface for working with data, CUE, and its ecosystem
+
+### Go release support policy
+
+As a general rule, we support the two most recent major releases of Go,
+matching Go's [security policy](https://go.dev/doc/security/policy).
+For example, if CUE v0.7.0 is released when Go's latest version is 1.21.5,
+v0.7.x including any following bugfix releases will require Go 1.20 or later.
+
+### Contributing
+
+To contribute, please read the [Contribution Guide](CONTRIBUTING.md).
+
+## Code of Conduct
+
+Guidelines for participating in CUE community spaces and a reporting process for
+handling issues can be found in the [Code of Conduct](https://cuelang.org/docs/reference/code-of-conduct/).
+
+## Contact
+
+- Ask questions via [GitHub Discussions](https://github.com/cue-lang/cue/discussions)
+- Chat with us on [Slack](https://cuelang.org/s/slack) and [Discord](https://cuelang.org/s/discord)
+- Subscribe to our [Community Calendar](https://cuelang.org/s/community-calendar) for community updates, demos, office hours, etc
 
 ---
 
-## Why CUE + Crossplane
-
-- **Typed contracts, not string templates.** Every resource is validated against a
-  CUE schema (`libs/`, `platform/xrd/`) before it can render. Bad input fails at
-  `make validate`, not at `kubectl apply`.
-- **Deterministic build-time rendering.** `cue export` produces byte-stable YAML.
-  The same input always yields the same output, which makes golden tests and diff
-  review trivial.
-- **Hub-and-spoke with Crossplane.** A hub cluster runs the XRDs, Compositions, and
-  Providers; spoke clusters consume pre-rendered manifests via GitOps.
-- **Escape hatch built in.** `make export-raw` renders flat Kubernetes manifests
-  (no Crossplane required on the target) for clusters that only run the underlying
-  operators (ESO, MetalLB, Kyverno, Traefik, …). See [docs/raw-fallback.md](docs/raw-fallback.md).
-
-See [docs/architecture.md](docs/architecture.md) for the full design and
-[docs/adr/](docs/adr/) for the decision records.
-
-## Repository layout
-
-| Directory | Purpose |
-|---|---|
-| `platform/xrd/` | Crossplane XRDs — the platform API schemas (namespace, rbac, quota, ingress, helmrelease, externalsecret, …) |
-| `platform/compositions/` | Compositions mapping XRD claims → Kubernetes `Object`s |
-| `platform/policy/` | Tier-based policy constraints (quota limits, network-policy defaults) |
-| `libs/tiers/` | Tier definitions — `dev`, `staging`, `production` |
-| `libs/k8s/` | Shared Kubernetes type schemas (metadata, namespace, rbac, …) |
-| `composites/{cluster}/` | Per-cluster desired state as composite inputs (CUE) — `home`, `preview`, `shared` |
-| `export/` | CI entry point — `export/all.cue` aggregates all claims and renders manifests |
-| `infrastructure/` | Version-pinned install manifests (Crossplane, ESO, Kyverno, provider Helm, …) |
-| `gitops/` | GitOps `Application` / `ApplicationSet` definitions (hub + spoke) |
-| `ci/` | Pipeline and rendering/bootstrap scripts |
-| `tests/` | Golden snapshots + Kyverno/chainsaw/e2e tests |
-| `docs/` | Architecture, ADRs, runbooks, and how-to guides |
-
-## Quick start
-
-Requires `cue` (v0.16.x), `yq`, `jq`, `helm`, and `kubectl`. The repo pins its
-toolchain in [`jarvy.toml`](jarvy.toml); `make setup` installs everything.
-
-```bash
-make validate                          # cue vet ./... — validate all schemas
-make export                            # render all cluster YAML (XRDs + Compositions + claims)
-make export-cluster CLUSTER=home       # render one cluster
-make export-raw CLUSTER=home           # render flat k8s YAML (Crossplane-free fallback)
-make test-raw                          # full raw-fallback test suite (goldens, lint, parity)
-make diff                              # dry-run render and diff against clusters/
-```
-
-Two output modes:
-
-- **Default** (`make export` / `make apply`) ships XRDs + Compositions + claim CRs —
-  the target cluster needs Crossplane.
-- **Raw** (`make export-raw` / `make apply-raw`) ships flat manifests — the target
-  needs only the operators that own the referenced CRDs.
-
-## The example clusters
-
-| Cluster | Role | What it demonstrates |
-|---|---|---|
-| `composites/home/` | A rich single-site cluster | Ingress + TLS, ESO/OpenBao secrets, Argo CD + Argo Events pipelines, CronJobs, Velero backups, network policy, Traefik middleware |
-| `composites/preview/` | Ephemeral PR-preview environments | ApplicationSets, per-PR namespaces, shared secrets, ExternalDNS webhook |
-| `composites/shared/` | Cross-cluster resources | Resources rendered into every cluster |
-
-These are the **examples** — read them to learn the patterns, then model your own
-cluster on them. See [docs/using-this-template.md](docs/using-this-template.md).
-
-## Placeholders — replace before use
-
-This template was scrubbed of all real infrastructure detail. Search-and-replace the
-following before deploying:
-
-| Placeholder | Meaning | Replace with |
-|---|---|---|
-| `example.com` | Public DNS zone / ingress hostnames | your public domain |
-| `example.internal` | Internal DNS zone | your internal domain |
-| `example-org` | GitHub org / GHCR namespace / `owner` labels | your org slug |
-| `example-bot` | GitHub bot/automation account | your bot username |
-| `example-app` | GitHub App name / private-key filename | your GitHub App |
-| `admin@example.com`, `eng-admin@example.com` | Operator emails | your emails |
-| `192.168.1.x` / `192.168.2.x` / `192.168.3.x` | LAN / load-balancer / second-site subnets | your network ranges |
-| `talos-home`, `talos-preview` | Talos/Omni cluster names | your cluster names |
-| `your-netbox-tenant`, `your-gcp-project` | NetBox Cloud tenant / GCP project | your values |
-| `0123456789abcdef…`, `fedcba9876543210…` | Opaque IDs (OAuth client, R2 account, CF zone) | your real IDs (keep them in a secret store, not in git) |
-
-**Secrets are never stored in git.** This repo uses External Secrets Operator (ESO):
-every `ExternalSecret` references a path in a secret store (OpenBao/Vault) — see
-[docs/secret-management.md](docs/secret-management.md). Wire your store and the
-placeholder paths resolve to your real values at runtime.
-
-## Documentation
-
-- [Architecture](docs/architecture.md) · [ADRs](docs/adr/) · [Why Crossplane + CUE](docs/why-crossplane-cue.md)
-- [Using this template](docs/using-this-template.md) · [Onboarding a cluster](docs/onboarding.md) · [Cluster setup](docs/cluster-setup.md)
-- [Raw-manifest fallback](docs/raw-fallback.md) · [Secret management](docs/secret-management.md)
-- [Feature pipeline](docs/feature-pipeline.md) · [Diagrams](docs/diagrams.md)
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security policy: [SECURITY.md](SECURITY.md).
-
-## License
-
-[MIT](LICENSE).
+Unless otherwise noted, the CUE source files are distributed
+under the Apache 2.0 license found in the LICENSE file.
